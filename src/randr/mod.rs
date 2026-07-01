@@ -12,6 +12,12 @@ use x11rb::protocol::randr::{
 };
 use x11rb::rust_connection::RustConnection;
 
+trait AutoBackend {
+    fn output_connected(&self, output_name: &str) -> Result<bool>;
+    fn apply_on_request(&self, request: &OnRequest) -> Result<ExitStatus>;
+    fn apply_off_request(&self, output_name: &str) -> Result<ExitStatus>;
+}
+
 pub(crate) struct X11Randr {
     conn: RustConnection,
     screen_num: usize,
@@ -64,39 +70,7 @@ impl X11Randr {
     }
 
     pub(crate) fn auto(&self, config: &DisplayConfig) -> Result<ExitStatus> {
-        let mut changed = false;
-        let mut found_connected_enabled = false;
-
-        for configured in &config.outputs {
-            let state = self.load_state()?;
-            let output = state
-                .outputs
-                .iter()
-                .find(|output| output.name == configured.name)
-                .ok_or_else(|| {
-                    AttachError::unavailable(format!("output '{}' is unavailable", configured.name))
-                })?;
-
-            if configured.enabled {
-                if !output.connected {
-                    continue;
-                }
-                found_connected_enabled = true;
-                let status = self.apply_on(&state, &configured.on_request()?)?;
-                changed |= status == ExitStatus::Changed;
-            } else {
-                let status = self.apply_off(&state, &configured.name)?;
-                changed |= status == ExitStatus::Changed;
-            }
-        }
-
-        if changed {
-            Ok(ExitStatus::Changed)
-        } else if found_connected_enabled {
-            Ok(ExitStatus::AlreadySatisfied)
-        } else {
-            Ok(ExitStatus::NoConfiguredConnectedOutput)
-        }
+        apply_auto(config, self)
     }
 
     fn apply_on(&self, state: &RandrState, request: &OnRequest) -> Result<ExitStatus> {
@@ -287,6 +261,55 @@ impl X11Randr {
     }
 }
 
+impl AutoBackend for X11Randr {
+    fn output_connected(&self, output_name: &str) -> Result<bool> {
+        let state = self.load_state()?;
+        let output = state
+            .outputs
+            .iter()
+            .find(|output| output.name == output_name)
+            .ok_or_else(|| {
+                AttachError::unavailable(format!("output '{output_name}' is unavailable"))
+            })?;
+        Ok(output.connected)
+    }
+
+    fn apply_on_request(&self, request: &OnRequest) -> Result<ExitStatus> {
+        self.turn_on(request)
+    }
+
+    fn apply_off_request(&self, output_name: &str) -> Result<ExitStatus> {
+        self.turn_off(output_name)
+    }
+}
+
+fn apply_auto(config: &DisplayConfig, backend: &impl AutoBackend) -> Result<ExitStatus> {
+    let mut changed = false;
+    let mut found_connected_enabled = false;
+
+    for configured in &config.outputs {
+        if configured.enabled {
+            if !backend.output_connected(&configured.name)? {
+                continue;
+            }
+            found_connected_enabled = true;
+            let status = backend.apply_on_request(&configured.on_request()?)?;
+            changed |= status == ExitStatus::Changed;
+        } else {
+            let status = backend.apply_off_request(&configured.name)?;
+            changed |= status == ExitStatus::Changed;
+        }
+    }
+
+    if changed {
+        Ok(ExitStatus::Changed)
+    } else if found_connected_enabled {
+        Ok(ExitStatus::AlreadySatisfied)
+    } else {
+        Ok(ExitStatus::NoConfiguredConnectedOutput)
+    }
+}
+
 fn check_set_config(status: SetConfig) -> Result<()> {
     if status == SetConfig::SUCCESS {
         Ok(())
@@ -317,6 +340,93 @@ fn scaled_mm(current_mm: u16, current_pixels: u16, new_pixels: u16) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{ConfiguredOutput, ModeRequest, RotationRequest};
+    use std::cell::RefCell;
+    use std::collections::HashMap;
+
+    #[derive(Debug, Default)]
+    struct FakeBackend {
+        connected: HashMap<String, bool>,
+        on_results: HashMap<String, ExitStatus>,
+        off_results: HashMap<String, ExitStatus>,
+        calls: RefCell<Vec<String>>,
+    }
+
+    impl FakeBackend {
+        fn with_connected(mut self, name: &str, connected: bool) -> Self {
+            self.connected.insert(name.to_string(), connected);
+            self
+        }
+
+        fn with_on_result(mut self, name: &str, status: ExitStatus) -> Self {
+            self.on_results.insert(name.to_string(), status);
+            self
+        }
+
+        fn with_off_result(mut self, name: &str, status: ExitStatus) -> Self {
+            self.off_results.insert(name.to_string(), status);
+            self
+        }
+
+        fn calls(&self) -> Vec<String> {
+            self.calls.borrow().clone()
+        }
+    }
+
+    impl AutoBackend for FakeBackend {
+        fn output_connected(&self, output_name: &str) -> Result<bool> {
+            self.calls
+                .borrow_mut()
+                .push(format!("connected:{output_name}"));
+            self.connected.get(output_name).copied().ok_or_else(|| {
+                AttachError::unavailable(format!("output '{output_name}' is unavailable"))
+            })
+        }
+
+        fn apply_on_request(&self, request: &OnRequest) -> Result<ExitStatus> {
+            self.calls
+                .borrow_mut()
+                .push(format!("on:{}:{:?}", request.output, request.mode));
+            Ok(self
+                .on_results
+                .get(&request.output)
+                .copied()
+                .unwrap_or(ExitStatus::AlreadySatisfied))
+        }
+
+        fn apply_off_request(&self, output_name: &str) -> Result<ExitStatus> {
+            self.calls.borrow_mut().push(format!("off:{output_name}"));
+            Ok(self
+                .off_results
+                .get(output_name)
+                .copied()
+                .unwrap_or(ExitStatus::AlreadySatisfied))
+        }
+    }
+
+    fn config(outputs: Vec<ConfiguredOutput>) -> DisplayConfig {
+        DisplayConfig { outputs }
+    }
+
+    fn enabled_output(name: &str) -> ConfiguredOutput {
+        ConfiguredOutput {
+            name: name.to_string(),
+            enabled: true,
+            width: None,
+            height: None,
+            rate: None,
+            x: 0,
+            y: 0,
+            rotation: RotationRequest::Normal,
+        }
+    }
+
+    fn disabled_output(name: &str) -> ConfiguredOutput {
+        ConfiguredOutput {
+            enabled: false,
+            ..enabled_output(name)
+        }
+    }
 
     #[test]
     fn checked_extent_rejects_negative_positions() {
@@ -341,5 +451,91 @@ mod tests {
     fn set_config_status_maps_non_success_to_randr_error() {
         let error = check_set_config(SetConfig::INVALID_CONFIG_TIME).unwrap_err();
         assert_eq!(error.kind(), crate::ErrorKind::RandrFailed);
+    }
+
+    #[test]
+    fn auto_skips_disconnected_enabled_outputs() {
+        let backend = FakeBackend::default().with_connected("HDMI-1", false);
+        let status = apply_auto(&config(vec![enabled_output("HDMI-1")]), &backend).unwrap();
+
+        assert_eq!(status, ExitStatus::NoConfiguredConnectedOutput);
+        assert_eq!(backend.calls(), vec!["connected:HDMI-1"]);
+    }
+
+    #[test]
+    fn auto_reports_already_satisfied_for_connected_noop_output() {
+        let backend = FakeBackend::default().with_connected("HDMI-1", true);
+        let status = apply_auto(&config(vec![enabled_output("HDMI-1")]), &backend).unwrap();
+
+        assert_eq!(status, ExitStatus::AlreadySatisfied);
+        assert_eq!(
+            backend.calls(),
+            vec![
+                "connected:HDMI-1".to_string(),
+                "on:HDMI-1:Preferred".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn auto_reports_changed_when_any_enabled_output_changes() {
+        let backend = FakeBackend::default()
+            .with_connected("HDMI-1", true)
+            .with_on_result("HDMI-1", ExitStatus::Changed);
+        let status = apply_auto(&config(vec![enabled_output("HDMI-1")]), &backend).unwrap();
+
+        assert_eq!(status, ExitStatus::Changed);
+    }
+
+    #[test]
+    fn auto_applies_disabled_outputs_without_connectivity_check() {
+        let backend = FakeBackend::default().with_off_result("DP-1", ExitStatus::Changed);
+        let status = apply_auto(&config(vec![disabled_output("DP-1")]), &backend).unwrap();
+
+        assert_eq!(status, ExitStatus::Changed);
+        assert_eq!(backend.calls(), vec!["off:DP-1"]);
+    }
+
+    #[test]
+    fn auto_converts_explicit_enabled_config_before_applying() {
+        let backend = FakeBackend::default().with_connected("HDMI-1", true);
+        let status = apply_auto(
+            &config(vec![ConfiguredOutput {
+                name: "HDMI-1".to_string(),
+                enabled: true,
+                width: Some(1280),
+                height: Some(720),
+                rate: Some(60.0),
+                x: 0,
+                y: 0,
+                rotation: RotationRequest::Normal,
+            }]),
+            &backend,
+        )
+        .unwrap();
+
+        assert_eq!(status, ExitStatus::AlreadySatisfied);
+        assert_eq!(
+            backend.calls(),
+            vec![
+                "connected:HDMI-1".to_string(),
+                format!(
+                    "on:HDMI-1:{:?}",
+                    ModeRequest::Explicit {
+                        width: 1280,
+                        height: 720,
+                        rate: Some(60.0)
+                    }
+                )
+            ]
+        );
+    }
+
+    #[test]
+    fn auto_propagates_unavailable_output_errors() {
+        let backend = FakeBackend::default();
+        let error = apply_auto(&config(vec![enabled_output("HDMI-1")]), &backend).unwrap_err();
+
+        assert_eq!(error.kind(), crate::ErrorKind::Unavailable);
     }
 }
