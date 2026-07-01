@@ -1,0 +1,33 @@
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  rust:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - uses: pirakansa/vorbere@v0
+        with:
+          version: v0.3.0
+
+      - name: Check
+        run: vorbere run check
+
+      - name: Test
+        run: vorbere run test
+
+      - name: Build Release
+        run: vorbere run build

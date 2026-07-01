@@ -1,0 +1,12 @@
+.env
+# Rust build artifacts
+/target
+**/*.rs.bk
+
+# OS/editor
+.DS_Store
+*.swp
+*.swo
+.idea/
+
+/*.tar.gz

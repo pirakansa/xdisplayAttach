@@ -1,0 +1,17 @@
+{
+    "initializeCommand": "${localWorkspaceFolder}/.devcontainer/init.sh",
+    "onCreateCommand": "sudo apt-get update && sudo apt-get install -y openssh-client",
+    "build": {
+        "dockerfile": "Dockerfile",
+        "args": {
+            "CONTAINER_USERNAME": "${localEnv:USERNAME:builder}",
+            "CONTAINER_USERID": "${localEnv:USERID:1000}"
+        }
+    },
+    "workspaceMount": "source=${localWorkspaceFolder},target=/work/${localWorkspaceFolderBasename},type=bind,consistency=cached",
+    "workspaceFolder": "/work/${localWorkspaceFolderBasename}",
+    "remoteUser": "${localEnv:USERNAME:builder}",
+    "remoteEnv": {
+        "PATH": "${containerEnv:PATH}:/home/${localEnv:USERNAME:builder}/.local/bin"
+    }
+}
