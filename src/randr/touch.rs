@@ -1,5 +1,16 @@
-use crate::{AttachError, Result, RotationRequest};
-use x11rb::protocol::xinput::{DeviceClassData, XIDeviceInfo};
+use super::mode::find_output;
+use super::state::{RandrState, DISABLED_CRTC};
+use super::X11Randr;
+use crate::{AttachError, OnRequest, Result, RotationRequest};
+use x11rb::connection::Connection;
+use x11rb::protocol::xinput::{
+    ConnectionExt as XinputConnectionExt, Device, DeviceClassData, XIChangePropertyAux,
+    XIDeviceInfo,
+};
+use x11rb::protocol::xproto::{ConnectionExt as XprotoConnectionExt, PropMode};
+
+const COORDINATE_TRANSFORMATION_MATRIX: &str = "Coordinate Transformation Matrix";
+const FLOAT_ATOM: &str = "FLOAT";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct Geometry {
@@ -92,6 +103,95 @@ pub(super) fn touch_device(device: &XIDeviceInfo) -> bool {
             .classes
             .iter()
             .any(|class| matches!(class.data, DeviceClassData::Touch(_)))
+}
+
+impl X11Randr {
+    pub(super) fn remap_touch_devices_to_output(
+        &self,
+        output_name: &str,
+        request: &OnRequest,
+    ) -> Result<()> {
+        let state = self.load_state()?;
+        let root = self.root_geometry()?;
+        let output = output_geometry(&state, output_name)?;
+        let matrix = coordinate_transformation_matrix(root, output, request.rotation)?;
+
+        self.apply_touch_coordinate_transformation(matrix)
+    }
+
+    fn root_geometry(&self) -> Result<Geometry> {
+        let root = self
+            .conn
+            .get_geometry(self.conn.setup().roots[self.screen_num].root)
+            .map_err(|error| AttachError::randr(error.to_string()))?
+            .reply()
+            .map_err(|error| AttachError::randr(error.to_string()))?;
+        Ok(Geometry::new(0, 0, root.width, root.height))
+    }
+
+    fn apply_touch_coordinate_transformation(&self, matrix: [f32; 9]) -> Result<()> {
+        self.conn
+            .xinput_xi_query_version(2, 2)
+            .map_err(|error| AttachError::randr(error.to_string()))?
+            .reply()
+            .map_err(|error| AttachError::randr(error.to_string()))?;
+
+        let property_atom = self.intern_atom(COORDINATE_TRANSFORMATION_MATRIX)?;
+        let float_atom = self.intern_atom(FLOAT_ATOM)?;
+        let matrix_bits = matrix.into_iter().map(f32::to_bits).collect::<Vec<u32>>();
+        let property = XIChangePropertyAux::Data32(matrix_bits);
+        let devices = self
+            .conn
+            .xinput_xi_query_device(Device::ALL)
+            .map_err(|error| AttachError::randr(error.to_string()))?
+            .reply()
+            .map_err(|error| AttachError::randr(error.to_string()))?;
+
+        for device in devices.infos.iter().filter(|device| touch_device(device)) {
+            self.conn
+                .xinput_xi_change_property(
+                    device.deviceid,
+                    PropMode::REPLACE,
+                    property_atom,
+                    float_atom,
+                    9,
+                    &property,
+                )
+                .map_err(|error| AttachError::randr(error.to_string()))?
+                .check()
+                .map_err(|error| AttachError::randr(error.to_string()))?;
+        }
+
+        Ok(())
+    }
+
+    fn intern_atom(&self, name: &str) -> Result<u32> {
+        Ok(self
+            .conn
+            .intern_atom(false, name.as_bytes())
+            .map_err(|error| AttachError::randr(error.to_string()))?
+            .reply()
+            .map_err(|error| AttachError::randr(error.to_string()))?
+            .atom)
+    }
+}
+
+fn output_geometry(state: &RandrState, output_name: &str) -> Result<Geometry> {
+    let output = find_output(state, output_name)?;
+    if output.crtc == DISABLED_CRTC {
+        return Err(AttachError::unavailable(format!(
+            "output '{output_name}' is inactive after mode switch"
+        )));
+    }
+    let crtc = state
+        .crtcs
+        .iter()
+        .find(|crtc| crtc.id == output.crtc)
+        .ok_or_else(|| {
+            AttachError::unavailable(format!("CRTC for '{output_name}' is unavailable"))
+        })?;
+
+    Ok(Geometry::new(crtc.x, crtc.y, crtc.width, crtc.height))
 }
 
 #[cfg(test)]
