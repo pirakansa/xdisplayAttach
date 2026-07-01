@@ -22,6 +22,7 @@ pub struct OnRequest {
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum ModeRequest {
+    Current,
     Preferred,
     Explicit {
         width: u16,

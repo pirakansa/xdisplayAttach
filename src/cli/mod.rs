@@ -32,8 +32,9 @@ where
 pub fn usage() -> String {
     "Usage:
   xdisplay-attach status
-  xdisplay-attach on --output NAME --preferred
-  xdisplay-attach on --output NAME --width N --height N [--rate HZ]
+  xdisplay-attach on --output NAME --preferred [--rotate DIR]
+  xdisplay-attach on --output NAME --width N --height N [--rate HZ] [--rotate DIR]
+  xdisplay-attach on --output NAME --rotate DIR
   xdisplay-attach off --output NAME
   xdisplay-attach auto --config FILE"
         .to_string()
@@ -68,6 +69,7 @@ fn parse_on(args: impl Iterator<Item = String>) -> Result<Command> {
     let mut width = None;
     let mut height = None;
     let mut rate = None;
+    let mut rotation = None;
     let mut args = args.peekable();
 
     while let Some(arg) = args.next() {
@@ -77,24 +79,30 @@ fn parse_on(args: impl Iterator<Item = String>) -> Result<Command> {
             "--width" => width = Some(parse_u16(next_value(&mut args, "--width")?, "--width")?),
             "--height" => height = Some(parse_u16(next_value(&mut args, "--height")?, "--height")?),
             "--rate" => rate = Some(parse_f64(next_value(&mut args, "--rate")?, "--rate")?),
+            "--rotate" => {
+                rotation = Some(parse_rotation(next_value(&mut args, "--rotate")?)?);
+            }
             _ => return Err(AttachError::usage(format!("unknown on option '{arg}'"))),
         }
     }
 
     let output = output.ok_or_else(|| AttachError::usage("on requires --output"))?;
-    let mode = match (preferred, width, height, rate) {
-        (true, None, None, None) => ModeRequest::Preferred,
-        (false, Some(width), Some(height), rate) => ModeRequest::Explicit {
+    let mode = match (preferred, width, height, rate, rotation) {
+        (false, None, None, None, Some(_)) => ModeRequest::Current,
+        (true, None, None, None, _) => ModeRequest::Preferred,
+        (false, Some(width), Some(height), rate, _) => ModeRequest::Explicit {
             width,
             height,
             rate,
         },
-        (true, Some(_), _, _) | (true, _, Some(_), _) | (true, _, _, Some(_)) => Err(
+        (true, Some(_), _, _, _) | (true, _, Some(_), _, _) | (true, _, _, Some(_), _) => Err(
             AttachError::usage("--preferred cannot be combined with --width, --height, or --rate"),
         )?,
-        (false, _, _, Some(_)) => Err(AttachError::usage("--rate requires --width and --height"))?,
+        (false, _, _, Some(_), _) => {
+            Err(AttachError::usage("--rate requires --width and --height"))?
+        }
         _ => Err(AttachError::usage(
-            "on requires either --preferred or --width N --height N",
+            "on requires --preferred, --width N --height N, or --rotate DIR",
         ))?,
     };
 
@@ -103,7 +111,7 @@ fn parse_on(args: impl Iterator<Item = String>) -> Result<Command> {
         mode,
         x: 0,
         y: 0,
-        rotation: crate::RotationRequest::Normal,
+        rotation: rotation.unwrap_or(crate::RotationRequest::Normal),
     }))
 }
 
@@ -164,6 +172,18 @@ fn parse_f64(value: String, option: &str) -> Result<f64> {
         .map_err(|_| AttachError::usage(format!("{option} must be a number")))
 }
 
+fn parse_rotation(value: String) -> Result<crate::RotationRequest> {
+    match value.as_str() {
+        "normal" => Ok(crate::RotationRequest::Normal),
+        "left" => Ok(crate::RotationRequest::Left),
+        "inverted" => Ok(crate::RotationRequest::Inverted),
+        "right" => Ok(crate::RotationRequest::Right),
+        _ => Err(AttachError::usage(
+            "--rotate must be one of: normal, left, inverted, right",
+        )),
+    }
+}
+
 fn print_status(status: &OutputStatus) {
     let connection = if status.connected {
         "connected"
@@ -198,6 +218,44 @@ mod tests {
                 x: 0,
                 y: 0,
                 rotation: RotationRequest::Normal
+            })
+        );
+    }
+
+    #[test]
+    fn parses_on_rotate_command_using_current_mode() {
+        let command = parse_args(["on", "--output", "HDMI-1", "--rotate", "left"]).unwrap();
+        assert_eq!(
+            command,
+            Command::On(OnRequest {
+                output: "HDMI-1".to_string(),
+                mode: ModeRequest::Current,
+                x: 0,
+                y: 0,
+                rotation: RotationRequest::Left
+            })
+        );
+    }
+
+    #[test]
+    fn parses_on_preferred_with_rotation() {
+        let command = parse_args([
+            "on",
+            "--output",
+            "HDMI-1",
+            "--preferred",
+            "--rotate",
+            "right",
+        ])
+        .unwrap();
+        assert_eq!(
+            command,
+            Command::On(OnRequest {
+                output: "HDMI-1".to_string(),
+                mode: ModeRequest::Preferred,
+                x: 0,
+                y: 0,
+                rotation: RotationRequest::Right
             })
         );
     }
@@ -259,6 +317,12 @@ mod tests {
     #[test]
     fn rejects_invalid_numeric_option() {
         let error = parse_args(["on", "--output", "HDMI-1", "--width", "wide"]).unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::Usage);
+    }
+
+    #[test]
+    fn rejects_invalid_rotation() {
+        let error = parse_args(["on", "--output", "HDMI-1", "--rotate", "sideways"]).unwrap_err();
         assert_eq!(error.kind(), ErrorKind::Usage);
     }
 }

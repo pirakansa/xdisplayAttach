@@ -82,7 +82,7 @@ impl X11Randr {
             )));
         }
 
-        let mode = select_mode(&state.modes, output, request.mode)?;
+        let mode = select_mode(state, output, request.mode)?;
         let crtc = choose_crtc(output, &state.crtcs)?;
         if output_already_satisfied(state, output, crtc, mode, request) {
             return Ok(CommandResult::new(ExitStatus::AlreadySatisfied));

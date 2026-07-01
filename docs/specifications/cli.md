@@ -7,8 +7,9 @@ manage, move, resize, raise, lower, or place application windows.
 
 ```text
 xdisplay-attach status
-xdisplay-attach on --output NAME --preferred
-xdisplay-attach on --output NAME --width N --height N [--rate HZ]
+xdisplay-attach on --output NAME --preferred [--rotate DIR]
+xdisplay-attach on --output NAME --width N --height N [--rate HZ] [--rotate DIR]
+xdisplay-attach on --output NAME --rotate DIR
 xdisplay-attach off --output NAME
 xdisplay-attach auto --config FILE
 ```
@@ -22,7 +23,10 @@ reported by RandR, then falls back to the first reported mode if no preferred
 mode is marked. With `--width` and `--height`, it selects an available mode with
 matching dimensions and, when supplied, matching refresh rate. `width` and
 `height` are the unrotated RandR mode dimensions; for a rotated portrait output,
-configure the native mode dimensions and set `rotation` separately.
+configure the native mode dimensions and set `rotation` separately. Refresh
+rate matching uses RandR mode timing and applies RandR `INTERLACE` and
+`DOUBLE_SCAN` mode flag adjustments. With `--rotate` and no mode request, `on`
+reuses the output's current active mode and changes only the requested rotation.
 
 `off` disables the selected output's active CRTC with `SetCrtcConfig` mode `0`
 and no outputs. It then shrinks the root screen to the remaining active output
