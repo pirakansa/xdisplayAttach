@@ -2,7 +2,11 @@ use std::process::ExitCode;
 
 fn main() -> ExitCode {
     match xdisplay_attach::run_cli() {
-        Ok(status) => {
+        Ok(result) => {
+            for warning in result.warnings() {
+                eprintln!("warning: {warning}");
+            }
+            let status = result.status();
             println!("{status}");
             ExitCode::from(status.code() as u8)
         }

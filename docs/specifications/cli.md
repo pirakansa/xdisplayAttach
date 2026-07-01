@@ -20,7 +20,9 @@ activity state, and current geometry when active.
 final selected mode. With `--preferred`, it uses the first preferred mode
 reported by RandR, then falls back to the first reported mode if no preferred
 mode is marked. With `--width` and `--height`, it selects an available mode with
-matching dimensions and, when supplied, matching refresh rate.
+matching dimensions and, when supplied, matching refresh rate. `width` and
+`height` are the unrotated RandR mode dimensions; for a rotated portrait output,
+configure the native mode dimensions and set `rotation` separately.
 
 `off` disables the selected output's active CRTC with `SetCrtcConfig` mode `0`
 and no outputs. It then shrinks the root screen to the remaining active output
@@ -29,6 +31,12 @@ bounds when those bounds can be represented safely.
 `auto` reads a JSON configuration, activates connected enabled outputs, disables
 outputs configured as off, and avoids changing outputs that already match the
 requested mode, position, rotation, and CRTC output list.
+
+After a successful output activation, `xdisplay-attach` remaps enabled XInput
+touch devices by updating their `Coordinate Transformation Matrix` to the
+selected output geometry and rotation. If RandR accepts the display change but
+touch remapping fails, the command still succeeds and prints a warning to
+standard error.
 
 ## Auto Configuration
 
@@ -57,8 +65,8 @@ Fields:
 
 - `name`: RandR output name.
 - `enabled`: whether the output should be active. Defaults to `true`.
-- `width` and `height`: explicit mode dimensions. Both must be present or both
-  must be omitted.
+- `width` and `height`: explicit unrotated RandR mode dimensions. Both must be
+  present or both must be omitted.
 - `rate`: optional refresh rate in Hz for explicit mode selection.
 - `x` and `y`: output position. Defaults to `0`.
 - `rotation`: one of `normal`, `left`, `inverted`, or `right`. Defaults to

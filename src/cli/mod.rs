@@ -1,6 +1,8 @@
 use crate::config::read_config;
 use crate::randr::X11Randr;
-use crate::{AttachError, Command, ExitStatus, ModeRequest, OnRequest, OutputStatus, Result};
+use crate::{
+    AttachError, Command, CommandResult, ExitStatus, ModeRequest, OnRequest, OutputStatus, Result,
+};
 use std::env;
 use std::path::PathBuf;
 
@@ -37,19 +39,19 @@ pub fn usage() -> String {
         .to_string()
 }
 
-pub fn run_cli() -> Result<ExitStatus> {
+pub fn run_cli() -> Result<CommandResult> {
     let command = parse_args(env::args().skip(1))?;
     match command {
         Command::Help => {
             println!("{}", usage());
-            Ok(ExitStatus::AlreadySatisfied)
+            Ok(CommandResult::new(ExitStatus::AlreadySatisfied))
         }
         Command::Status => {
             let statuses = X11Randr::connect()?.status()?;
             for status in statuses {
                 print_status(&status);
             }
-            Ok(ExitStatus::AlreadySatisfied)
+            Ok(CommandResult::new(ExitStatus::AlreadySatisfied))
         }
         Command::On(request) => X11Randr::connect()?.turn_on(&request),
         Command::Off { output } => X11Randr::connect()?.turn_off(&output),

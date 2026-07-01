@@ -28,7 +28,7 @@ non-Raspberry Pi Linux/Xorg systems where DRM/udev hotplug events are visible.
 - Set output position and rotation.
 - Resize the RandR root screen when required.
 - Recover display pipeline state after DRM/udev hotplug events.
-- Optionally remap touch input when output geometry or rotation changes.
+- Remap touch input when output geometry or rotation changes.
 
 `xdisplay-attach` must not manage application windows. Window placement and
 kiosk layout enforcement belong to a separate tool.
@@ -86,7 +86,10 @@ Activation flow:
 9. Call RandR `SetCrtcConfig` with the chosen CRTC, mode, output list, position,
    and rotation.
 10. Flush the X11 connection.
-11. Return a clear status indicating whether the display pipeline changed.
+11. Remap enabled XInput touch devices to the activated output geometry and
+   rotation. If this remapping fails after RandR accepts the display change,
+   keep the display change successful and report a warning.
+12. Return a clear status indicating whether the display pipeline changed.
 
 ## Deactivation Behavior
 
@@ -183,7 +186,5 @@ must not need to change output modes to avoid flicker.
 ## Open Questions
 
 - What exact configuration schema should `auto --config FILE` use?
-- Should touch input remapping be included in the first release or added after
-  output activation is stable?
 - Which Linux/Xorg environments are required for initial validation besides
   Raspberry Pi?

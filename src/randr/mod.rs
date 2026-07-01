@@ -1,21 +1,31 @@
 mod mode;
 mod state;
+mod touch;
 
 use self::mode::{choose_crtc, find_output, mode_by_id, output_already_satisfied, select_mode};
 use self::state::{
     CrtcState, OutputState, RandrState, SelectedMode, CURRENT_TIME, DISABLED_CRTC, DISABLED_MODE,
 };
-use crate::{AttachError, DisplayConfig, ExitStatus, ModeSummary, OnRequest, OutputStatus, Result};
+use self::touch::{coordinate_transformation_matrix, touch_device, Geometry};
+use crate::{
+    AttachError, CommandResult, DisplayConfig, ExitStatus, ModeSummary, OnRequest, OutputStatus,
+    Result,
+};
 use x11rb::connection::Connection;
 use x11rb::protocol::randr::{
     Connection as OutputConnection, ConnectionExt as RandrConnectionExt, Crtc, Rotation, SetConfig,
 };
+use x11rb::protocol::xinput::{ConnectionExt as XinputConnectionExt, Device, XIChangePropertyAux};
+use x11rb::protocol::xproto::{ConnectionExt as XprotoConnectionExt, PropMode};
 use x11rb::rust_connection::RustConnection;
+
+const COORDINATE_TRANSFORMATION_MATRIX: &str = "Coordinate Transformation Matrix";
+const FLOAT_ATOM: &str = "FLOAT";
 
 trait AutoBackend {
     fn output_connected(&self, output_name: &str) -> Result<bool>;
-    fn apply_on_request(&self, request: &OnRequest) -> Result<ExitStatus>;
-    fn apply_off_request(&self, output_name: &str) -> Result<ExitStatus>;
+    fn apply_on_request(&self, request: &OnRequest) -> Result<CommandResult>;
+    fn apply_off_request(&self, output_name: &str) -> Result<CommandResult>;
 }
 
 pub(crate) struct X11Randr {
@@ -59,21 +69,21 @@ impl X11Randr {
             .collect())
     }
 
-    pub(crate) fn turn_on(&self, request: &OnRequest) -> Result<ExitStatus> {
+    pub(crate) fn turn_on(&self, request: &OnRequest) -> Result<CommandResult> {
         let state = self.load_state()?;
         self.apply_on(&state, request)
     }
 
-    pub(crate) fn turn_off(&self, output_name: &str) -> Result<ExitStatus> {
+    pub(crate) fn turn_off(&self, output_name: &str) -> Result<CommandResult> {
         let state = self.load_state()?;
         self.apply_off(&state, output_name)
     }
 
-    pub(crate) fn auto(&self, config: &DisplayConfig) -> Result<ExitStatus> {
+    pub(crate) fn auto(&self, config: &DisplayConfig) -> Result<CommandResult> {
         apply_auto(config, self)
     }
 
-    fn apply_on(&self, state: &RandrState, request: &OnRequest) -> Result<ExitStatus> {
+    fn apply_on(&self, state: &RandrState, request: &OnRequest) -> Result<CommandResult> {
         let output = find_output(state, &request.output)?;
         if !output.connected {
             return Err(AttachError::unavailable(format!(
@@ -85,7 +95,7 @@ impl X11Randr {
         let mode = select_mode(&state.modes, output, request.mode)?;
         let crtc = choose_crtc(output, &state.crtcs)?;
         if output_already_satisfied(state, output, crtc, mode, request) {
-            return Ok(ExitStatus::AlreadySatisfied);
+            return Ok(CommandResult::new(ExitStatus::AlreadySatisfied));
         }
 
         self.expand_root_if_needed(state, mode, request)?;
@@ -109,13 +119,19 @@ impl X11Randr {
         self.conn
             .flush()
             .map_err(|error| AttachError::randr(error.to_string()))?;
-        Ok(ExitStatus::Changed)
+        let mut result = CommandResult::new(ExitStatus::Changed);
+        if let Err(error) = self.remap_touch_devices_to_output(&request.output, request) {
+            result.extend_warnings(vec![format!(
+                "output mode changed, but touch remapping failed: {error}"
+            )]);
+        }
+        Ok(result)
     }
 
-    fn apply_off(&self, state: &RandrState, output_name: &str) -> Result<ExitStatus> {
+    fn apply_off(&self, state: &RandrState, output_name: &str) -> Result<CommandResult> {
         let output = find_output(state, output_name)?;
         if output.crtc == DISABLED_CRTC {
-            return Ok(ExitStatus::AlreadySatisfied);
+            return Ok(CommandResult::new(ExitStatus::AlreadySatisfied));
         }
 
         let reply = self
@@ -139,7 +155,7 @@ impl X11Randr {
         self.conn
             .flush()
             .map_err(|error| AttachError::randr(error.to_string()))?;
-        Ok(ExitStatus::Changed)
+        Ok(CommandResult::new(ExitStatus::Changed))
     }
 
     fn load_state(&self) -> Result<RandrState> {
@@ -259,6 +275,71 @@ impl X11Randr {
             .check()
             .map_err(|error| AttachError::randr(error.to_string()))
     }
+
+    fn remap_touch_devices_to_output(&self, output_name: &str, request: &OnRequest) -> Result<()> {
+        let state = self.load_state()?;
+        let root = self.root_geometry()?;
+        let output = output_geometry(&state, output_name)?;
+        let matrix = coordinate_transformation_matrix(root, output, request.rotation)?;
+
+        self.apply_touch_coordinate_transformation(matrix)
+    }
+
+    fn root_geometry(&self) -> Result<Geometry> {
+        let root = self
+            .conn
+            .get_geometry(self.conn.setup().roots[self.screen_num].root)
+            .map_err(|error| AttachError::randr(error.to_string()))?
+            .reply()
+            .map_err(|error| AttachError::randr(error.to_string()))?;
+        Ok(Geometry::new(0, 0, root.width, root.height))
+    }
+
+    fn apply_touch_coordinate_transformation(&self, matrix: [f32; 9]) -> Result<()> {
+        self.conn
+            .xinput_xi_query_version(2, 2)
+            .map_err(|error| AttachError::randr(error.to_string()))?
+            .reply()
+            .map_err(|error| AttachError::randr(error.to_string()))?;
+
+        let property_atom = self.intern_atom(COORDINATE_TRANSFORMATION_MATRIX)?;
+        let float_atom = self.intern_atom(FLOAT_ATOM)?;
+        let matrix_bits = matrix.into_iter().map(f32::to_bits).collect::<Vec<u32>>();
+        let property = XIChangePropertyAux::Data32(matrix_bits);
+        let devices = self
+            .conn
+            .xinput_xi_query_device(Device::ALL)
+            .map_err(|error| AttachError::randr(error.to_string()))?
+            .reply()
+            .map_err(|error| AttachError::randr(error.to_string()))?;
+
+        for device in devices.infos.iter().filter(|device| touch_device(device)) {
+            self.conn
+                .xinput_xi_change_property(
+                    device.deviceid,
+                    PropMode::REPLACE,
+                    property_atom,
+                    float_atom,
+                    9,
+                    &property,
+                )
+                .map_err(|error| AttachError::randr(error.to_string()))?
+                .check()
+                .map_err(|error| AttachError::randr(error.to_string()))?;
+        }
+
+        Ok(())
+    }
+
+    fn intern_atom(&self, name: &str) -> Result<u32> {
+        Ok(self
+            .conn
+            .intern_atom(false, name.as_bytes())
+            .map_err(|error| AttachError::randr(error.to_string()))?
+            .reply()
+            .map_err(|error| AttachError::randr(error.to_string()))?
+            .atom)
+    }
 }
 
 impl AutoBackend for X11Randr {
@@ -274,18 +355,19 @@ impl AutoBackend for X11Randr {
         Ok(output.connected)
     }
 
-    fn apply_on_request(&self, request: &OnRequest) -> Result<ExitStatus> {
+    fn apply_on_request(&self, request: &OnRequest) -> Result<CommandResult> {
         self.turn_on(request)
     }
 
-    fn apply_off_request(&self, output_name: &str) -> Result<ExitStatus> {
+    fn apply_off_request(&self, output_name: &str) -> Result<CommandResult> {
         self.turn_off(output_name)
     }
 }
 
-fn apply_auto(config: &DisplayConfig, backend: &impl AutoBackend) -> Result<ExitStatus> {
+fn apply_auto(config: &DisplayConfig, backend: &impl AutoBackend) -> Result<CommandResult> {
     let mut changed = false;
     let mut found_connected_enabled = false;
+    let mut warnings = Vec::new();
 
     for configured in &config.outputs {
         if configured.enabled {
@@ -293,21 +375,26 @@ fn apply_auto(config: &DisplayConfig, backend: &impl AutoBackend) -> Result<Exit
                 continue;
             }
             found_connected_enabled = true;
-            let status = backend.apply_on_request(&configured.on_request()?)?;
-            changed |= status == ExitStatus::Changed;
+            let result = backend.apply_on_request(&configured.on_request()?)?;
+            changed |= result.status() == ExitStatus::Changed;
+            warnings.extend(result.warnings().iter().cloned());
         } else {
-            let status = backend.apply_off_request(&configured.name)?;
-            changed |= status == ExitStatus::Changed;
+            let result = backend.apply_off_request(&configured.name)?;
+            changed |= result.status() == ExitStatus::Changed;
+            warnings.extend(result.warnings().iter().cloned());
         }
     }
 
-    if changed {
-        Ok(ExitStatus::Changed)
+    let status = if changed {
+        ExitStatus::Changed
     } else if found_connected_enabled {
-        Ok(ExitStatus::AlreadySatisfied)
+        ExitStatus::AlreadySatisfied
     } else {
-        Ok(ExitStatus::NoConfiguredConnectedOutput)
-    }
+        ExitStatus::NoConfiguredConnectedOutput
+    };
+    let mut result = CommandResult::new(status);
+    result.extend_warnings(warnings);
+    Ok(result)
 }
 
 fn check_set_config(status: SetConfig) -> Result<()> {
@@ -335,6 +422,24 @@ fn scaled_mm(current_mm: u16, current_pixels: u16, new_pixels: u16) -> u32 {
         return u32::from(new_pixels);
     }
     (u32::from(current_mm) * u32::from(new_pixels) / u32::from(current_pixels)).max(1)
+}
+
+fn output_geometry(state: &RandrState, output_name: &str) -> Result<Geometry> {
+    let output = find_output(state, output_name)?;
+    if output.crtc == DISABLED_CRTC {
+        return Err(AttachError::unavailable(format!(
+            "output '{output_name}' is inactive after mode switch"
+        )));
+    }
+    let crtc = state
+        .crtcs
+        .iter()
+        .find(|crtc| crtc.id == output.crtc)
+        .ok_or_else(|| {
+            AttachError::unavailable(format!("CRTC for '{output_name}' is unavailable"))
+        })?;
+
+    Ok(Geometry::new(crtc.x, crtc.y, crtc.width, crtc.height))
 }
 
 #[cfg(test)]
@@ -383,24 +488,26 @@ mod tests {
             })
         }
 
-        fn apply_on_request(&self, request: &OnRequest) -> Result<ExitStatus> {
+        fn apply_on_request(&self, request: &OnRequest) -> Result<CommandResult> {
             self.calls
                 .borrow_mut()
                 .push(format!("on:{}:{:?}", request.output, request.mode));
-            Ok(self
-                .on_results
-                .get(&request.output)
-                .copied()
-                .unwrap_or(ExitStatus::AlreadySatisfied))
+            Ok(CommandResult::new(
+                self.on_results
+                    .get(&request.output)
+                    .copied()
+                    .unwrap_or(ExitStatus::AlreadySatisfied),
+            ))
         }
 
-        fn apply_off_request(&self, output_name: &str) -> Result<ExitStatus> {
+        fn apply_off_request(&self, output_name: &str) -> Result<CommandResult> {
             self.calls.borrow_mut().push(format!("off:{output_name}"));
-            Ok(self
-                .off_results
-                .get(output_name)
-                .copied()
-                .unwrap_or(ExitStatus::AlreadySatisfied))
+            Ok(CommandResult::new(
+                self.off_results
+                    .get(output_name)
+                    .copied()
+                    .unwrap_or(ExitStatus::AlreadySatisfied),
+            ))
         }
     }
 
@@ -456,18 +563,18 @@ mod tests {
     #[test]
     fn auto_skips_disconnected_enabled_outputs() {
         let backend = FakeBackend::default().with_connected("HDMI-1", false);
-        let status = apply_auto(&config(vec![enabled_output("HDMI-1")]), &backend).unwrap();
+        let result = apply_auto(&config(vec![enabled_output("HDMI-1")]), &backend).unwrap();
 
-        assert_eq!(status, ExitStatus::NoConfiguredConnectedOutput);
+        assert_eq!(result.status(), ExitStatus::NoConfiguredConnectedOutput);
         assert_eq!(backend.calls(), vec!["connected:HDMI-1"]);
     }
 
     #[test]
     fn auto_reports_already_satisfied_for_connected_noop_output() {
         let backend = FakeBackend::default().with_connected("HDMI-1", true);
-        let status = apply_auto(&config(vec![enabled_output("HDMI-1")]), &backend).unwrap();
+        let result = apply_auto(&config(vec![enabled_output("HDMI-1")]), &backend).unwrap();
 
-        assert_eq!(status, ExitStatus::AlreadySatisfied);
+        assert_eq!(result.status(), ExitStatus::AlreadySatisfied);
         assert_eq!(
             backend.calls(),
             vec![
@@ -482,24 +589,24 @@ mod tests {
         let backend = FakeBackend::default()
             .with_connected("HDMI-1", true)
             .with_on_result("HDMI-1", ExitStatus::Changed);
-        let status = apply_auto(&config(vec![enabled_output("HDMI-1")]), &backend).unwrap();
+        let result = apply_auto(&config(vec![enabled_output("HDMI-1")]), &backend).unwrap();
 
-        assert_eq!(status, ExitStatus::Changed);
+        assert_eq!(result.status(), ExitStatus::Changed);
     }
 
     #[test]
     fn auto_applies_disabled_outputs_without_connectivity_check() {
         let backend = FakeBackend::default().with_off_result("DP-1", ExitStatus::Changed);
-        let status = apply_auto(&config(vec![disabled_output("DP-1")]), &backend).unwrap();
+        let result = apply_auto(&config(vec![disabled_output("DP-1")]), &backend).unwrap();
 
-        assert_eq!(status, ExitStatus::Changed);
+        assert_eq!(result.status(), ExitStatus::Changed);
         assert_eq!(backend.calls(), vec!["off:DP-1"]);
     }
 
     #[test]
     fn auto_converts_explicit_enabled_config_before_applying() {
         let backend = FakeBackend::default().with_connected("HDMI-1", true);
-        let status = apply_auto(
+        let result = apply_auto(
             &config(vec![ConfiguredOutput {
                 name: "HDMI-1".to_string(),
                 enabled: true,
@@ -514,7 +621,7 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(status, ExitStatus::AlreadySatisfied);
+        assert_eq!(result.status(), ExitStatus::AlreadySatisfied);
         assert_eq!(
             backend.calls(),
             vec![
