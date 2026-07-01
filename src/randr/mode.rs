@@ -162,6 +162,17 @@ mod tests {
     }
 
     #[test]
+    fn falls_back_to_first_mode_when_no_preferred_mode_is_marked() {
+        let modes = vec![
+            mode(11, 1920, 1080, 148_500_000),
+            mode(12, 1280, 720, 74_250_000),
+        ];
+        let selected =
+            select_mode(&modes, &output(vec![11, 12], 0), ModeRequest::Preferred).unwrap();
+        assert_eq!(selected.id, 11);
+    }
+
+    #[test]
     fn selects_explicit_mode_with_refresh_rate() {
         let modes = vec![
             mode(11, 1920, 1080, 148_500_000),
@@ -178,6 +189,22 @@ mod tests {
         )
         .unwrap();
         assert_eq!(selected.id, 12);
+    }
+
+    #[test]
+    fn rejects_unavailable_explicit_mode() {
+        let modes = vec![mode(11, 1920, 1080, 148_500_000)];
+        let error = select_mode(
+            &modes,
+            &output(vec![11], 1),
+            ModeRequest::Explicit {
+                width: 1024,
+                height: 768,
+                rate: None,
+            },
+        )
+        .unwrap_err();
+        assert_eq!(error.kind(), crate::ErrorKind::Unavailable);
     }
 
     #[test]
@@ -209,5 +236,92 @@ mod tests {
         )
         .unwrap();
         assert_eq!(selected, 7);
+    }
+
+    #[test]
+    fn rejects_when_all_allowed_crtcs_are_used() {
+        let error = choose_crtc(
+            &output(vec![11], 1),
+            &[CrtcState {
+                id: 7,
+                x: 0,
+                y: 0,
+                width: 1920,
+                height: 1080,
+                mode: 11,
+                rotation: Rotation::ROTATE0,
+                outputs: vec![2],
+            }],
+        )
+        .unwrap_err();
+        assert_eq!(error.kind(), crate::ErrorKind::Unavailable);
+    }
+
+    #[test]
+    fn detects_already_satisfied_output_including_rotation() {
+        let output = OutputState {
+            id: 1,
+            name: "HDMI-1".to_string(),
+            connected: true,
+            crtc: 7,
+            possible_crtcs: vec![7],
+            modes: vec![11],
+            preferred_count: 1,
+        };
+        let state = RandrState {
+            root: 1,
+            config_timestamp: 1,
+            root_width: 1920,
+            root_height: 1080,
+            root_mm_width: 300,
+            root_mm_height: 200,
+            outputs: vec![output.clone()],
+            crtcs: vec![CrtcState {
+                id: 7,
+                x: 0,
+                y: 0,
+                width: 1920,
+                height: 1080,
+                mode: 11,
+                rotation: Rotation::ROTATE0,
+                outputs: vec![1],
+            }],
+            modes: vec![mode(11, 1920, 1080, 148_500_000)],
+        };
+        let request = OnRequest {
+            output: "HDMI-1".to_string(),
+            mode: ModeRequest::Preferred,
+            x: 0,
+            y: 0,
+            rotation: crate::RotationRequest::Normal,
+        };
+
+        assert!(output_already_satisfied(
+            &state,
+            &output,
+            7,
+            SelectedMode {
+                id: 11,
+                width: 1920,
+                height: 1080
+            },
+            &request
+        ));
+
+        let rotated_request = OnRequest {
+            rotation: crate::RotationRequest::Left,
+            ..request
+        };
+        assert!(!output_already_satisfied(
+            &state,
+            &output,
+            7,
+            SelectedMode {
+                id: 11,
+                width: 1920,
+                height: 1080
+            },
+            &rotated_request
+        ));
     }
 }

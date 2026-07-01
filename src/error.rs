@@ -61,3 +61,16 @@ impl Display for AttachError {
 impl std::error::Error for AttachError {}
 
 pub type Result<T> = std::result::Result<T, AttachError>;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn maps_stable_error_exit_codes() {
+        assert_eq!(AttachError::usage("bad input").exit_code(), 64);
+        assert_eq!(AttachError::xorg("missing display").exit_code(), 69);
+        assert_eq!(AttachError::unavailable("missing mode").exit_code(), 70);
+        assert_eq!(AttachError::randr("failed").exit_code(), 71);
+    }
+}

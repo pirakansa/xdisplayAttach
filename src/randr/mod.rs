@@ -313,3 +313,33 @@ fn scaled_mm(current_mm: u16, current_pixels: u16, new_pixels: u16) -> u32 {
     }
     (u32::from(current_mm) * u32::from(new_pixels) / u32::from(current_pixels)).max(1)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn checked_extent_rejects_negative_positions() {
+        let error = checked_extent(-1, 100).unwrap_err();
+        assert_eq!(error.kind(), crate::ErrorKind::Unavailable);
+    }
+
+    #[test]
+    fn checked_extent_rejects_overflow() {
+        let error = checked_extent(i16::MAX, u16::MAX).unwrap_err();
+        assert_eq!(error.kind(), crate::ErrorKind::Unavailable);
+    }
+
+    #[test]
+    fn scales_physical_size_with_pixel_size() {
+        assert_eq!(scaled_mm(300, 1920, 3840), 600);
+        assert_eq!(scaled_mm(0, 1920, 3840), 3840);
+        assert_eq!(scaled_mm(300, 0, 3840), 3840);
+    }
+
+    #[test]
+    fn set_config_status_maps_non_success_to_randr_error() {
+        let error = check_set_config(SetConfig::INVALID_CONFIG_TIME).unwrap_err();
+        assert_eq!(error.kind(), crate::ErrorKind::RandrFailed);
+    }
+}

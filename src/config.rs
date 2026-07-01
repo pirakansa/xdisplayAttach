@@ -84,4 +84,72 @@ mod tests {
         assert!(config.outputs[0].enabled);
         assert!(!config.outputs[1].enabled);
     }
+
+    #[test]
+    fn defaults_enabled_position_and_rotation() {
+        let config: DisplayConfig = serde_json::from_str(
+            r#"{
+                "outputs": [
+                    {"name": "HDMI-1"}
+                ]
+            }"#,
+        )
+        .unwrap();
+
+        let request = config.outputs[0].on_request().unwrap();
+        assert!(config.outputs[0].enabled);
+        assert_eq!(request.mode, ModeRequest::Preferred);
+        assert_eq!(request.x, 0);
+        assert_eq!(request.y, 0);
+        assert_eq!(request.rotation, RotationRequest::Normal);
+    }
+
+    #[test]
+    fn converts_explicit_config_to_on_request() {
+        let config: DisplayConfig = serde_json::from_str(
+            r#"{
+                "outputs": [
+                    {
+                        "name": "HDMI-1",
+                        "width": 1280,
+                        "height": 720,
+                        "rate": 60.0,
+                        "x": 10,
+                        "y": 20,
+                        "rotation": "left"
+                    }
+                ]
+            }"#,
+        )
+        .unwrap();
+
+        let request = config.outputs[0].on_request().unwrap();
+        assert_eq!(request.output, "HDMI-1");
+        assert_eq!(
+            request.mode,
+            ModeRequest::Explicit {
+                width: 1280,
+                height: 720,
+                rate: Some(60.0)
+            }
+        );
+        assert_eq!(request.x, 10);
+        assert_eq!(request.y, 20);
+        assert_eq!(request.rotation, RotationRequest::Left);
+    }
+
+    #[test]
+    fn rejects_partial_dimensions() {
+        let config: DisplayConfig = serde_json::from_str(
+            r#"{
+                "outputs": [
+                    {"name": "HDMI-1", "width": 1920}
+                ]
+            }"#,
+        )
+        .unwrap();
+
+        let error = config.outputs[0].on_request().unwrap_err();
+        assert_eq!(error.kind(), crate::ErrorKind::Usage);
+    }
 }

@@ -74,3 +74,19 @@ pub struct ModeSummary {
     pub height: u16,
     pub mode_id: Mode,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rotation_dimensions_swap_for_quarter_turns() {
+        assert_eq!(RotationRequest::Normal.dimensions(1920, 1080), (1920, 1080));
+        assert_eq!(
+            RotationRequest::Inverted.dimensions(1920, 1080),
+            (1920, 1080)
+        );
+        assert_eq!(RotationRequest::Left.dimensions(1920, 1080), (1080, 1920));
+        assert_eq!(RotationRequest::Right.dimensions(1920, 1080), (1080, 1920));
+    }
+}

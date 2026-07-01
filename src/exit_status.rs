@@ -26,3 +26,15 @@ impl Display for ExitStatus {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn maps_stable_success_exit_codes() {
+        assert_eq!(ExitStatus::Changed.code(), 0);
+        assert_eq!(ExitStatus::AlreadySatisfied.code(), 10);
+        assert_eq!(ExitStatus::NoConfiguredConnectedOutput.code(), 11);
+    }
+}

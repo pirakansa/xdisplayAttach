@@ -215,4 +215,48 @@ mod tests {
         .unwrap_err();
         assert_eq!(error.kind(), ErrorKind::Usage);
     }
+
+    #[test]
+    fn parses_off_command() {
+        assert_eq!(
+            parse_args(["off", "--output", "HDMI-1"]).unwrap(),
+            Command::Off {
+                output: "HDMI-1".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn parses_auto_command() {
+        assert_eq!(
+            parse_args(["auto", "--config", "displays.json"]).unwrap(),
+            Command::Auto {
+                config: PathBuf::from("displays.json")
+            }
+        );
+    }
+
+    #[test]
+    fn rejects_status_extra_argument() {
+        let error = parse_args(["status", "--output", "HDMI-1"]).unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::Usage);
+    }
+
+    #[test]
+    fn rejects_rate_without_dimensions() {
+        let error = parse_args(["on", "--output", "HDMI-1", "--rate", "60"]).unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::Usage);
+    }
+
+    #[test]
+    fn rejects_missing_option_value() {
+        let error = parse_args(["off", "--output"]).unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::Usage);
+    }
+
+    #[test]
+    fn rejects_invalid_numeric_option() {
+        let error = parse_args(["on", "--output", "HDMI-1", "--width", "wide"]).unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::Usage);
+    }
 }
