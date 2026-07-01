@@ -11,6 +11,7 @@ pub enum ExitStatus {
 pub struct CommandResult {
     status: ExitStatus,
     warnings: Vec<String>,
+    print_status: bool,
 }
 
 impl CommandResult {
@@ -18,6 +19,7 @@ impl CommandResult {
         Self {
             status,
             warnings: Vec::new(),
+            print_status: true,
         }
     }
 
@@ -25,6 +27,7 @@ impl CommandResult {
         Self {
             status,
             warnings: vec![warning.into()],
+            print_status: true,
         }
     }
 
@@ -32,8 +35,20 @@ impl CommandResult {
         self.status
     }
 
+    pub fn should_print_status(&self) -> bool {
+        self.print_status
+    }
+
     pub fn warnings(&self) -> &[String] {
         &self.warnings
+    }
+
+    pub(crate) fn without_status_line(status: ExitStatus) -> Self {
+        Self {
+            status,
+            warnings: Vec::new(),
+            print_status: false,
+        }
     }
 
     pub(crate) fn extend_warnings(&mut self, warnings: Vec<String>) {
@@ -78,5 +93,14 @@ mod tests {
 
         assert_eq!(result.status(), ExitStatus::Changed);
         assert_eq!(result.warnings(), &["touch remapping failed"]);
+        assert!(result.should_print_status());
+    }
+
+    #[test]
+    fn command_result_can_suppress_status_line() {
+        let result = CommandResult::without_status_line(ExitStatus::AlreadySatisfied);
+
+        assert_eq!(result.status(), ExitStatus::AlreadySatisfied);
+        assert!(!result.should_print_status());
     }
 }

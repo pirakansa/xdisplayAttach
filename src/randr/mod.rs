@@ -23,6 +23,14 @@ pub(crate) struct X11Randr {
     screen_num: usize,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct OnTarget {
+    output_id: x11rb::protocol::randr::Output,
+    crtc: Crtc,
+    mode: SelectedMode,
+    already_satisfied: bool,
+}
+
 impl X11Randr {
     pub(crate) fn connect() -> Result<Self> {
         let (conn, screen_num) =
@@ -74,31 +82,40 @@ impl X11Randr {
     }
 
     fn apply_on(&self, state: &RandrState, request: &OnRequest) -> Result<CommandResult> {
-        let output = find_output(state, &request.output)?;
-        if !output.connected {
-            return Err(AttachError::unavailable(format!(
-                "output '{}' is not connected",
-                request.output
-            )));
-        }
-
-        let mode = select_mode(state, output, request.mode)?;
-        let crtc = choose_crtc(output, &state.crtcs)?;
-        if output_already_satisfied(state, output, crtc, mode, request) {
+        let mut target = select_on_target(state, request)?;
+        let active_state;
+        let state = if target.already_satisfied {
             return Ok(CommandResult::new(ExitStatus::AlreadySatisfied));
-        }
+        } else if self.expand_root_if_needed(state, target.mode, request)? {
+            active_state = self.load_state()?;
+            target = select_on_target(&active_state, request)?;
+            if target.already_satisfied {
+                return Ok(CommandResult::new(ExitStatus::AlreadySatisfied));
+            }
+            &active_state
+        } else {
+            state
+        };
 
-        self.expand_root_if_needed(state, mode, request)?;
-        let outputs = [output.id];
+        self.apply_selected_on(state, target, request)
+    }
+
+    fn apply_selected_on(
+        &self,
+        state: &RandrState,
+        target: OnTarget,
+        request: &OnRequest,
+    ) -> Result<CommandResult> {
+        let outputs = [target.output_id];
         let reply = self
             .conn
             .randr_set_crtc_config(
-                crtc,
+                target.crtc,
                 CURRENT_TIME,
                 state.config_timestamp,
                 request.x,
                 request.y,
-                mode.id,
+                target.mode.id,
                 request.rotation.to_randr(),
                 &outputs,
             )
@@ -225,16 +242,17 @@ impl X11Randr {
         state: &RandrState,
         mode: SelectedMode,
         request: &OnRequest,
-    ) -> Result<()> {
+    ) -> Result<bool> {
         let (width, height) = request.rotation.dimensions(mode.width, mode.height);
         let right = checked_extent(request.x, width)?;
         let bottom = checked_extent(request.y, height)?;
         let new_width = right.max(state.root_width);
         let new_height = bottom.max(state.root_height);
         if new_width == state.root_width && new_height == state.root_height {
-            return Ok(());
+            return Ok(false);
         }
-        self.set_screen_size(state, new_width, new_height)
+        self.set_screen_size(state, new_width, new_height)?;
+        Ok(true)
     }
 
     fn shrink_root_after_disable(&self, state: &RandrState, disabled_crtc: Crtc) -> Result<()> {
@@ -265,6 +283,25 @@ impl X11Randr {
             .check()
             .map_err(|error| AttachError::randr(error.to_string()))
     }
+}
+
+fn select_on_target(state: &RandrState, request: &OnRequest) -> Result<OnTarget> {
+    let output = find_output(state, &request.output)?;
+    if !output.connected {
+        return Err(AttachError::unavailable(format!(
+            "output '{}' is not connected",
+            request.output
+        )));
+    }
+
+    let mode = select_mode(state, output, request.mode)?;
+    let crtc = choose_crtc(output, &state.crtcs)?;
+    Ok(OnTarget {
+        output_id: output.id,
+        crtc,
+        mode,
+        already_satisfied: output_already_satisfied(state, output, crtc, mode, request),
+    })
 }
 
 fn check_set_config(status: SetConfig) -> Result<()> {

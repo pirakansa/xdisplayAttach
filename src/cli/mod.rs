@@ -45,14 +45,18 @@ pub fn run_cli() -> Result<CommandResult> {
     match command {
         Command::Help => {
             println!("{}", usage());
-            Ok(CommandResult::new(ExitStatus::AlreadySatisfied))
+            Ok(CommandResult::without_status_line(
+                ExitStatus::AlreadySatisfied,
+            ))
         }
         Command::Status => {
             let statuses = X11Randr::connect()?.status()?;
             for status in statuses {
                 print_status(&status);
             }
-            Ok(CommandResult::new(ExitStatus::AlreadySatisfied))
+            Ok(CommandResult::without_status_line(
+                ExitStatus::AlreadySatisfied,
+            ))
         }
         Command::On(request) => X11Randr::connect()?.turn_on(&request),
         Command::Off { output } => X11Randr::connect()?.turn_off(&output),

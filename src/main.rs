@@ -7,7 +7,9 @@ fn main() -> ExitCode {
                 eprintln!("warning: {warning}");
             }
             let status = result.status();
-            println!("{status}");
+            if result.should_print_status() {
+                println!("{status}");
+            }
             ExitCode::from(status.code() as u8)
         }
         Err(error) => {
