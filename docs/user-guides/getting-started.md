@@ -30,11 +30,16 @@ xdisplay-attach status
 ```
 
 Output rows include the RandR output name accepted by `--output`, connection
-state, activity state, and current geometry when the output is active:
+state, activity state, and current geometry when the output is active. Indented
+rows show the available modes you can request with `--width`, `--height`, and
+optionally `--rate`:
 
 ```text
 HDMI-1 connected active 1920x1080+0+0
+  1920x1080 60.000Hz current preferred
+  1280x720 59.940Hz
 DP-1 connected inactive
+  1920x1080 60.000Hz preferred
 ```
 
 ## Activate an Output

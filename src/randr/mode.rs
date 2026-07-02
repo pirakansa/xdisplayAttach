@@ -114,7 +114,7 @@ fn current_mode_id(state: &RandrState, output: &OutputState) -> Option<Mode> {
         .and_then(|crtc| (crtc.mode != DISABLED_MODE).then_some(crtc.mode))
 }
 
-fn refresh_millihertz(mode: &ModeInfo) -> Option<u32> {
+pub(super) fn refresh_millihertz(mode: &ModeInfo) -> Option<u32> {
     let total = u64::from(mode.htotal).checked_mul(u64::from(mode.vtotal))?;
     if total == 0 {
         return None;

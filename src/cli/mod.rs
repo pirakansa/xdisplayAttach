@@ -52,7 +52,7 @@ pub fn run_cli() -> Result<CommandResult> {
         Command::Status => {
             let statuses = X11Randr::connect()?.status()?;
             for status in statuses {
-                print_status(&status);
+                print!("{}", format_status(&status));
             }
             Ok(CommandResult::without_status_line(
                 ExitStatus::AlreadySatisfied,
@@ -188,22 +188,53 @@ fn parse_rotation(value: String) -> Result<crate::RotationRequest> {
     }
 }
 
-fn print_status(status: &OutputStatus) {
+fn format_status(status: &OutputStatus) -> String {
     let connection = if status.connected {
         "connected"
     } else {
         "disconnected"
     };
     let activity = if status.active { "active" } else { "inactive" };
-    match (status.current_mode, status.x, status.y) {
+    let mut output = match (status.current_mode, status.x, status.y) {
         (Some(mode), Some(x), Some(y)) => {
-            println!(
+            format!(
                 "{} {connection} {activity} {}x{}+{x}+{y}",
                 status.name, mode.width, mode.height
-            );
+            )
         }
-        _ => println!("{} {connection} {activity}", status.name),
+        _ => format!("{} {connection} {activity}", status.name),
+    };
+
+    for mode in &status.available_modes {
+        output.push('\n');
+        output.push_str("  ");
+        output.push_str(&format_mode(mode, status.current_mode));
     }
+    output.push('\n');
+    output
+}
+
+fn format_mode(mode: &crate::ModeSummary, current_mode: Option<crate::ModeSummary>) -> String {
+    let mut output = format!("{}x{}", mode.width, mode.height);
+    if let Some(refresh_millihertz) = mode.refresh_millihertz {
+        output.push(' ');
+        output.push_str(&format_refresh(refresh_millihertz));
+    }
+    if current_mode.is_some_and(|current_mode| current_mode.mode_id == mode.mode_id) {
+        output.push_str(" current");
+    }
+    if mode.preferred {
+        output.push_str(" preferred");
+    }
+    output
+}
+
+fn format_refresh(refresh_millihertz: u32) -> String {
+    format!(
+        "{}.{:03}Hz",
+        refresh_millihertz / 1000,
+        refresh_millihertz % 1000
+    )
 }
 
 #[cfg(test)]
@@ -328,5 +359,59 @@ mod tests {
     fn rejects_invalid_rotation() {
         let error = parse_args(["on", "--output", "HDMI-1", "--rotate", "sideways"]).unwrap_err();
         assert_eq!(error.kind(), ErrorKind::Usage);
+    }
+
+    #[test]
+    fn formats_status_with_available_modes() {
+        let status = OutputStatus {
+            name: "HDMI-1".to_string(),
+            connected: true,
+            active: true,
+            current_mode: Some(crate::ModeSummary {
+                width: 1920,
+                height: 1080,
+                mode_id: 11,
+                refresh_millihertz: Some(60_000),
+                preferred: true,
+            }),
+            available_modes: vec![
+                crate::ModeSummary {
+                    width: 1920,
+                    height: 1080,
+                    mode_id: 11,
+                    refresh_millihertz: Some(60_000),
+                    preferred: true,
+                },
+                crate::ModeSummary {
+                    width: 1280,
+                    height: 720,
+                    mode_id: 12,
+                    refresh_millihertz: Some(59_940),
+                    preferred: false,
+                },
+            ],
+            x: Some(0),
+            y: Some(0),
+        };
+
+        assert_eq!(
+            format_status(&status),
+            "HDMI-1 connected active 1920x1080+0+0\n  1920x1080 60.000Hz current preferred\n  1280x720 59.940Hz\n"
+        );
+    }
+
+    #[test]
+    fn formats_status_without_modes() {
+        let status = OutputStatus {
+            name: "DP-1".to_string(),
+            connected: false,
+            active: false,
+            current_mode: None,
+            available_modes: Vec::new(),
+            x: None,
+            y: None,
+        };
+
+        assert_eq!(format_status(&status), "DP-1 disconnected inactive\n");
     }
 }
