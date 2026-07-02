@@ -65,6 +65,7 @@ pub struct OutputStatus {
     pub connected: bool,
     pub active: bool,
     pub current_mode: Option<ModeSummary>,
+    pub available_modes: Vec<ModeSummary>,
     pub x: Option<i16>,
     pub y: Option<i16>,
 }
@@ -74,6 +75,8 @@ pub struct ModeSummary {
     pub width: u16,
     pub height: u16,
     pub mode_id: Mode,
+    pub refresh_millihertz: Option<u32>,
+    pub preferred: bool,
 }
 
 #[cfg(test)]

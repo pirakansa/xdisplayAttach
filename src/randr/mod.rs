@@ -4,7 +4,9 @@ mod state;
 mod touch;
 
 use self::auto::apply_auto;
-use self::mode::{choose_crtc, find_output, mode_by_id, output_already_satisfied, select_mode};
+use self::mode::{
+    choose_crtc, find_output, mode_by_id, output_already_satisfied, refresh_millihertz, select_mode,
+};
 use self::state::{
     CrtcState, OutputState, RandrState, SelectedMode, CURRENT_TIME, DISABLED_CRTC, DISABLED_MODE,
 };
@@ -44,27 +46,7 @@ impl X11Randr {
 
     pub(crate) fn status(&self) -> Result<Vec<OutputStatus>> {
         let state = self.load_state()?;
-        Ok(state
-            .outputs
-            .iter()
-            .map(|output| {
-                let crtc = state.crtcs.iter().find(|crtc| crtc.id == output.crtc);
-                OutputStatus {
-                    name: output.name.clone(),
-                    connected: output.connected,
-                    active: output.crtc != DISABLED_CRTC,
-                    current_mode: crtc
-                        .and_then(|crtc| mode_by_id(&state.modes, crtc.mode))
-                        .map(|mode| ModeSummary {
-                            width: mode.width,
-                            height: mode.height,
-                            mode_id: mode.id,
-                        }),
-                    x: crtc.map(|crtc| crtc.x),
-                    y: crtc.map(|crtc| crtc.y),
-                }
-            })
-            .collect())
+        Ok(output_statuses(&state))
     }
 
     pub(crate) fn turn_on(&self, request: &OnRequest) -> Result<CommandResult> {
@@ -285,6 +267,48 @@ impl X11Randr {
     }
 }
 
+fn output_statuses(state: &RandrState) -> Vec<OutputStatus> {
+    state
+        .outputs
+        .iter()
+        .map(|output| {
+            let crtc = state.crtcs.iter().find(|crtc| crtc.id == output.crtc);
+            OutputStatus {
+                name: output.name.clone(),
+                connected: output.connected,
+                active: output.crtc != DISABLED_CRTC,
+                current_mode: crtc.and_then(|crtc| mode_summary(state, output, crtc.mode)),
+                available_modes: output
+                    .modes
+                    .iter()
+                    .copied()
+                    .filter_map(|mode_id| mode_summary(state, output, mode_id))
+                    .collect(),
+                x: crtc.map(|crtc| crtc.x),
+                y: crtc.map(|crtc| crtc.y),
+            }
+        })
+        .collect()
+}
+
+fn mode_summary(
+    state: &RandrState,
+    output: &OutputState,
+    mode_id: x11rb::protocol::randr::Mode,
+) -> Option<ModeSummary> {
+    let mode = mode_by_id(&state.modes, mode_id)?;
+    Some(ModeSummary {
+        width: mode.width,
+        height: mode.height,
+        mode_id: mode.id,
+        refresh_millihertz: refresh_millihertz(mode),
+        preferred: output
+            .modes
+            .get(0..output.preferred_count)
+            .is_some_and(|preferred| preferred.contains(&mode_id)),
+    })
+}
+
 fn select_on_target(state: &RandrState, request: &OnRequest) -> Result<OnTarget> {
     let output = find_output(state, &request.output)?;
     if !output.connected {
@@ -334,6 +358,120 @@ fn scaled_mm(current_mm: u16, current_pixels: u16, new_pixels: u16) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use x11rb::protocol::randr::{Mode, ModeFlag, ModeInfo};
+
+    fn mode(id: Mode, width: u16, height: u16, dot_clock: u32) -> ModeInfo {
+        ModeInfo {
+            id,
+            width,
+            height,
+            dot_clock,
+            hsync_start: 0,
+            hsync_end: 0,
+            htotal: 2200,
+            hskew: 0,
+            vsync_start: 0,
+            vsync_end: 0,
+            vtotal: 1125,
+            name_len: 0,
+            mode_flags: ModeFlag::from(0_u32),
+        }
+    }
+
+    #[test]
+    fn output_statuses_include_available_modes() {
+        let state = RandrState {
+            root: 1,
+            config_timestamp: 1,
+            root_width: 1920,
+            root_height: 1080,
+            root_mm_width: 300,
+            root_mm_height: 200,
+            outputs: vec![OutputState {
+                id: 2,
+                name: "HDMI-1".to_string(),
+                connected: true,
+                crtc: 7,
+                possible_crtcs: vec![7],
+                modes: vec![11, 12],
+                preferred_count: 1,
+            }],
+            crtcs: vec![CrtcState {
+                id: 7,
+                x: 0,
+                y: 0,
+                width: 1920,
+                height: 1080,
+                mode: 11,
+                rotation: Rotation::ROTATE0,
+                outputs: vec![2],
+            }],
+            modes: vec![
+                mode(11, 1920, 1080, 148_500_000),
+                mode(12, 1280, 720, 74_250_000),
+            ],
+        };
+
+        let statuses = output_statuses(&state);
+
+        assert_eq!(statuses.len(), 1);
+        assert_eq!(
+            statuses[0].current_mode,
+            Some(ModeSummary {
+                width: 1920,
+                height: 1080,
+                mode_id: 11,
+                refresh_millihertz: Some(60_000),
+                preferred: true,
+            })
+        );
+        assert_eq!(
+            statuses[0].available_modes,
+            vec![
+                ModeSummary {
+                    width: 1920,
+                    height: 1080,
+                    mode_id: 11,
+                    refresh_millihertz: Some(60_000),
+                    preferred: true,
+                },
+                ModeSummary {
+                    width: 1280,
+                    height: 720,
+                    mode_id: 12,
+                    refresh_millihertz: Some(30_000),
+                    preferred: false,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn output_statuses_ignore_unresolved_available_mode_ids() {
+        let state = RandrState {
+            root: 1,
+            config_timestamp: 1,
+            root_width: 1920,
+            root_height: 1080,
+            root_mm_width: 300,
+            root_mm_height: 200,
+            outputs: vec![OutputState {
+                id: 2,
+                name: "DP-1".to_string(),
+                connected: false,
+                crtc: DISABLED_CRTC,
+                possible_crtcs: Vec::new(),
+                modes: vec![99],
+                preferred_count: 1,
+            }],
+            crtcs: Vec::new(),
+            modes: Vec::new(),
+        };
+
+        let statuses = output_statuses(&state);
+
+        assert_eq!(statuses[0].available_modes, Vec::new());
+    }
 
     #[test]
     fn checked_extent_rejects_negative_positions() {

@@ -1,8 +1,9 @@
 # xdisplay-attach
 
-`xdisplay-attach` manages Xorg/RandR display pipeline state. It detects outputs,
-enables connected outputs, disables active outputs, selects modes, assigns
-CRTCs, sets output geometry, and resizes the RandR root screen when needed.
+`xdisplay-attach` manages Xorg/RandR display pipeline state. It detects outputs
+and their available modes, enables connected outputs, disables active outputs,
+assigns CRTCs, sets output geometry, and resizes the RandR root screen when
+needed.
 
 Window placement and kiosk layout enforcement are intentionally out of scope.
 Run a separate layout tool after `xdisplay-attach` has made the desired outputs

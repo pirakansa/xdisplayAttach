@@ -15,7 +15,18 @@ xdisplay-attach auto --config FILE
 ```
 
 `status` observes RandR outputs and prints each output name, connection state,
-activity state, and current geometry when active.
+activity state, and current geometry when active. It then prints the output's
+available RandR modes, in RandR-reported order, indented below the output row.
+Mode rows include dimensions, refresh rate when RandR timing can represent it,
+and `current` or `preferred` markers when applicable:
+
+```text
+HDMI-1 connected active 1920x1080+0+0
+  1920x1080 60.000Hz current preferred
+  1280x720 59.940Hz
+DP-1 connected inactive
+  1920x1080 60.000Hz preferred
+```
 
 `on` activates a connected output with a single `SetCrtcConfig` call for the
 final selected mode. With `--preferred`, it uses the first preferred mode
