@@ -130,7 +130,10 @@ mod tests {
     }
 
     fn config(outputs: Vec<ConfiguredOutput>) -> DisplayConfig {
-        DisplayConfig { outputs }
+        DisplayConfig {
+            schema_version: None,
+            outputs,
+        }
     }
 
     fn enabled_output(name: &str) -> ConfiguredOutput {

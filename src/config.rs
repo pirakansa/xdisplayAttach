@@ -3,8 +3,11 @@ use serde::Deserialize;
 use std::fs;
 use std::path::Path;
 
+const CURRENT_SCHEMA_VERSION: u16 = 1;
+
 #[derive(Debug, Deserialize)]
 pub struct DisplayConfig {
+    pub schema_version: Option<u16>,
     pub outputs: Vec<ConfiguredOutput>,
 }
 
@@ -28,9 +31,11 @@ pub fn read_config(path: &Path) -> Result<DisplayConfig> {
     let content = fs::read_to_string(path).map_err(|error| {
         AttachError::usage(format!("failed to read '{}': {error}", path.display()))
     })?;
-    serde_json::from_str(&content).map_err(|error| {
+    let config: DisplayConfig = serde_json::from_str(&content).map_err(|error| {
         AttachError::usage(format!("failed to parse '{}': {error}", path.display()))
-    })
+    })?;
+    config.validate()?;
+    Ok(config)
 }
 
 fn enabled_by_default() -> bool {
@@ -64,6 +69,19 @@ impl ConfiguredOutput {
     }
 }
 
+impl DisplayConfig {
+    pub(crate) fn validate(&self) -> Result<()> {
+        if let Some(schema_version) = self.schema_version {
+            if schema_version != CURRENT_SCHEMA_VERSION {
+                return Err(AttachError::usage(format!(
+                    "unsupported schema_version {schema_version}; expected {CURRENT_SCHEMA_VERSION}"
+                )));
+            }
+        }
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -81,8 +99,41 @@ mod tests {
         .unwrap();
 
         assert_eq!(config.outputs.len(), 2);
+        assert_eq!(config.schema_version, None);
         assert!(config.outputs[0].enabled);
         assert!(!config.outputs[1].enabled);
+    }
+
+    #[test]
+    fn parses_current_schema_version() {
+        let config: DisplayConfig = serde_json::from_str(
+            r#"{
+                "schema_version": 1,
+                "outputs": [
+                    {"name": "HDMI-1"}
+                ]
+            }"#,
+        )
+        .unwrap();
+
+        assert_eq!(config.schema_version, Some(1));
+        config.validate().unwrap();
+    }
+
+    #[test]
+    fn rejects_unsupported_schema_version() {
+        let config: DisplayConfig = serde_json::from_str(
+            r#"{
+                "schema_version": 2,
+                "outputs": [
+                    {"name": "HDMI-1"}
+                ]
+            }"#,
+        )
+        .unwrap();
+
+        let error = config.validate().unwrap_err();
+        assert_eq!(error.kind(), crate::ErrorKind::Usage);
     }
 
     #[test]

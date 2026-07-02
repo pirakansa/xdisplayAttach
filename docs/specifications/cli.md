@@ -12,6 +12,7 @@ xdisplay-attach on --output NAME --width N --height N [--rate HZ] [--rotate DIR]
 xdisplay-attach on --output NAME --rotate DIR
 xdisplay-attach off --output NAME
 xdisplay-attach auto --config FILE
+xdisplay-attach enforce --config FILE [--dry-run]
 ```
 
 `status` observes RandR outputs and prints each output name, connection state,
@@ -47,6 +48,24 @@ bounds when those bounds can be represented safely.
 outputs configured as off, and avoids changing outputs that already match the
 requested mode, position, rotation, and CRTC output list.
 
+`enforce` reads the same JSON configuration as `auto` and applies the same
+state convergence behavior. It is intended for startup and hotplug workflows
+where a display policy should be restored whenever the command runs. With
+`--dry-run`, it loads current RandR state, validates configured connected
+outputs, prints the planned per-output actions, and does not call RandR
+configuration methods. Dry-run output lines use these forms:
+
+```text
+HDMI-1 set 1920x1080+0+0 rotate left
+HDMI-1 already satisfied
+HDMI-1 skipped disconnected
+DP-1 disable
+DP-1 already disabled
+```
+
+After the dry-run action lines, the command prints the same final status line
+as a normal successful command.
+
 After a successful output activation, `xdisplay-attach` remaps enabled XInput
 touch devices by updating their `Coordinate Transformation Matrix` to the
 selected output geometry and rotation. If RandR accepts the display change but
@@ -57,6 +76,7 @@ standard error.
 
 ```json
 {
+  "schema_version": 1,
   "outputs": [
     {
       "name": "HDMI-1",
@@ -78,6 +98,8 @@ standard error.
 
 Fields:
 
+- `schema_version`: optional configuration schema version. Omitted files are
+  treated as version `1`. When present, the only supported value is `1`.
 - `name`: RandR output name.
 - `enabled`: whether the output should be active. Defaults to `true`.
 - `width` and `height`: explicit unrotated RandR mode dimensions. Both must be
@@ -85,10 +107,18 @@ Fields:
 - `rate`: optional refresh rate in Hz for explicit mode selection.
 - `x` and `y`: output position. Defaults to `0`.
 - `rotation`: one of `normal`, `left`, `inverted`, or `right`. Defaults to
-  `normal`.
+  `normal`. For `left` and `right`, `width` and `height` still refer to the
+  unrotated RandR mode dimensions.
 
 If `width` and `height` are omitted for an enabled output, the preferred mode is
 used.
+
+If an enabled connected output cannot satisfy its requested mode, position,
+rotation, or CRTC assignment, the command fails with exit status `70`. For
+example, an explicit `width` and `height` pair that is not present in the
+output's RandR modes is reported as an unavailable requested mode. Commands do
+not roll back changes already applied to earlier outputs in the same
+configuration.
 
 ## Exit Status
 

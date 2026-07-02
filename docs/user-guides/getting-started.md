@@ -1,7 +1,7 @@
 # Getting Started
 
 `xdisplay-attach` controls Xorg/RandR display pipeline state. Use it to inspect
-outputs, enable connected outputs, disable active outputs, and apply a small
+outputs, enable connected outputs, disable active outputs, and enforce a small
 JSON display configuration.
 
 ## Install
@@ -77,12 +77,13 @@ xdisplay-attach off --output DP-1
 After disabling an output, `xdisplay-attach` shrinks the RandR root screen to
 the remaining active output bounds when those bounds can be represented safely.
 
-## Apply a Configuration
+## Enforce a Configuration
 
 Create a display configuration:
 
 ```json
 {
+  "schema_version": 1,
   "outputs": [
     {
       "name": "HDMI-1",
@@ -102,15 +103,23 @@ Create a display configuration:
 }
 ```
 
+Preview it without changing RandR state:
+
+```bash
+xdisplay-attach enforce --config displays.json --dry-run
+```
+
 Apply it:
 
 ```bash
-xdisplay-attach auto --config displays.json
+xdisplay-attach enforce --config displays.json
 ```
 
-`auto` skips enabled outputs that are disconnected, activates connected enabled
-outputs, disables outputs configured with `"enabled": false`, and leaves outputs
-unchanged when the requested state is already satisfied.
+`enforce` skips enabled outputs that are disconnected, activates connected
+enabled outputs, disables outputs configured with `"enabled": false`, and leaves
+outputs unchanged when the requested state is already satisfied. The older
+`auto --config displays.json` command applies the same configuration behavior
+and remains available for existing scripts.
 
 Successful commands print one of these status lines unless the command is
 `status` or help:

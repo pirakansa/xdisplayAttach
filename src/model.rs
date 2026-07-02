@@ -8,6 +8,7 @@ pub enum Command {
     On(OnRequest),
     Off { output: String },
     Auto { config: PathBuf },
+    Enforce { config: PathBuf, dry_run: bool },
     Help,
 }
 
@@ -55,6 +56,15 @@ impl RotationRequest {
         match self {
             Self::Normal | Self::Inverted => (width, height),
             Self::Left | Self::Right => (height, width),
+        }
+    }
+
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Normal => "normal",
+            Self::Left => "left",
+            Self::Inverted => "inverted",
+            Self::Right => "right",
         }
     }
 }
