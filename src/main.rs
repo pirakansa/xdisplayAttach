@@ -3,6 +3,9 @@ use std::process::ExitCode;
 fn main() -> ExitCode {
     match xdisplay_attach::run_cli() {
         Ok(result) => {
+            for message in result.messages() {
+                println!("{message}");
+            }
             for warning in result.warnings() {
                 eprintln!("warning: {warning}");
             }

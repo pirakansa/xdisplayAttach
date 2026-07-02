@@ -22,6 +22,7 @@ where
         "on" => parse_on(args),
         "off" => parse_off(args),
         "auto" => parse_auto(args),
+        "enforce" => parse_enforce(args),
         _ => Err(AttachError::usage(format!(
             "unknown command '{command}'\n\n{}",
             usage()
@@ -36,7 +37,8 @@ pub fn usage() -> String {
   xdisplay-attach on --output NAME --width N --height N [--rate HZ] [--rotate DIR]
   xdisplay-attach on --output NAME --rotate DIR
   xdisplay-attach off --output NAME
-  xdisplay-attach auto --config FILE"
+  xdisplay-attach auto --config FILE
+  xdisplay-attach enforce --config FILE [--dry-run]"
         .to_string()
 }
 
@@ -63,6 +65,10 @@ pub fn run_cli() -> Result<CommandResult> {
         Command::Auto { config } => {
             let config = read_config(&config)?;
             X11Randr::connect()?.auto(&config)
+        }
+        Command::Enforce { config, dry_run } => {
+            let config = read_config(&config)?;
+            X11Randr::connect()?.enforce(&config, dry_run)
         }
     }
 }
@@ -144,6 +150,27 @@ fn parse_auto(args: impl Iterator<Item = String>) -> Result<Command> {
     }
     Ok(Command::Auto {
         config: config.ok_or_else(|| AttachError::usage("auto requires --config"))?,
+    })
+}
+
+fn parse_enforce(args: impl Iterator<Item = String>) -> Result<Command> {
+    let mut config = None;
+    let mut dry_run = false;
+    let mut args = args.peekable();
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--config" => config = Some(PathBuf::from(next_value(&mut args, "--config")?)),
+            "--dry-run" => dry_run = true,
+            _ => {
+                return Err(AttachError::usage(format!(
+                    "unknown enforce option '{arg}'"
+                )))
+            }
+        }
+    }
+    Ok(Command::Enforce {
+        config: config.ok_or_else(|| AttachError::usage("enforce requires --config"))?,
+        dry_run,
     })
 }
 
@@ -327,6 +354,28 @@ mod tests {
             parse_args(["auto", "--config", "displays.json"]).unwrap(),
             Command::Auto {
                 config: PathBuf::from("displays.json")
+            }
+        );
+    }
+
+    #[test]
+    fn parses_enforce_command() {
+        assert_eq!(
+            parse_args(["enforce", "--config", "displays.json"]).unwrap(),
+            Command::Enforce {
+                config: PathBuf::from("displays.json"),
+                dry_run: false,
+            }
+        );
+    }
+
+    #[test]
+    fn parses_enforce_dry_run_command() {
+        assert_eq!(
+            parse_args(["enforce", "--config", "displays.json", "--dry-run"]).unwrap(),
+            Command::Enforce {
+                config: PathBuf::from("displays.json"),
+                dry_run: true,
             }
         );
     }

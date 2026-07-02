@@ -15,7 +15,7 @@ active.
 cargo install --path .
 xdisplay-attach status
 xdisplay-attach on --output HDMI-1 --preferred
-xdisplay-attach auto --config displays.json
+xdisplay-attach enforce --config displays.json
 ```
 
 See [user guides](docs/user-guides/README.md) for practical workflows. See the

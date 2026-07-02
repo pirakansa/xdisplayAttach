@@ -10,6 +10,7 @@ pub enum ExitStatus {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CommandResult {
     status: ExitStatus,
+    messages: Vec<String>,
     warnings: Vec<String>,
     print_status: bool,
 }
@@ -18,6 +19,7 @@ impl CommandResult {
     pub fn new(status: ExitStatus) -> Self {
         Self {
             status,
+            messages: Vec::new(),
             warnings: Vec::new(),
             print_status: true,
         }
@@ -26,6 +28,7 @@ impl CommandResult {
     pub fn with_warning(status: ExitStatus, warning: impl Into<String>) -> Self {
         Self {
             status,
+            messages: Vec::new(),
             warnings: vec![warning.into()],
             print_status: true,
         }
@@ -39,13 +42,27 @@ impl CommandResult {
         self.print_status
     }
 
+    pub fn messages(&self) -> &[String] {
+        &self.messages
+    }
+
     pub fn warnings(&self) -> &[String] {
         &self.warnings
+    }
+
+    pub(crate) fn with_messages(status: ExitStatus, messages: Vec<String>) -> Self {
+        Self {
+            status,
+            messages,
+            warnings: Vec::new(),
+            print_status: true,
+        }
     }
 
     pub(crate) fn without_status_line(status: ExitStatus) -> Self {
         Self {
             status,
+            messages: Vec::new(),
             warnings: Vec::new(),
             print_status: false,
         }
@@ -92,8 +109,19 @@ mod tests {
         let result = CommandResult::with_warning(ExitStatus::Changed, "touch remapping failed");
 
         assert_eq!(result.status(), ExitStatus::Changed);
+        assert!(result.messages().is_empty());
         assert_eq!(result.warnings(), &["touch remapping failed"]);
         assert!(result.should_print_status());
+    }
+
+    #[test]
+    fn command_result_carries_messages() {
+        let result =
+            CommandResult::with_messages(ExitStatus::Changed, vec!["HDMI-1 set".to_string()]);
+
+        assert_eq!(result.status(), ExitStatus::Changed);
+        assert_eq!(result.messages(), &["HDMI-1 set"]);
+        assert!(result.warnings().is_empty());
     }
 
     #[test]

@@ -1,7 +1,7 @@
 # Hotplug Usage
 
-`xdisplay-attach auto --config FILE` is intended to run as a short-lived systemd
-service triggered by DRM/udev events.
+`xdisplay-attach enforce --config FILE` is intended to run as a short-lived
+systemd service triggered by startup or DRM/udev events.
 
 Do not run X11/RandR work directly from a udev rule. The service must provide
 the user-session environment needed to reach Xorg, such as `DISPLAY` and
@@ -9,10 +9,11 @@ the user-session environment needed to reach Xorg, such as `DISPLAY` and
 
 ## Display Configuration
 
-Use the same configuration file that you would pass to `auto` manually:
+Use the same configuration file that you would pass to `enforce` manually:
 
 ```json
 {
+  "schema_version": 1,
   "outputs": [
     {
       "name": "HDMI-1",
@@ -31,9 +32,35 @@ Use the same configuration file that you would pass to `auto` manually:
 }
 ```
 
-`auto` skips enabled outputs that are disconnected. If every configured enabled
-output is disconnected and no disabled output changes state, the command exits
-with status `11`.
+`enforce` skips enabled outputs that are disconnected. If every configured
+enabled output is disconnected and no disabled output changes state, the command
+exits with status `11`.
+
+For a portrait startup policy, keep `width` and `height` set to the unrotated
+RandR mode dimensions and set `rotation` separately:
+
+```json
+{
+  "schema_version": 1,
+  "outputs": [
+    {
+      "name": "HDMI-1",
+      "enabled": true,
+      "width": 1920,
+      "height": 1080,
+      "x": 0,
+      "y": 0,
+      "rotation": "left"
+    }
+  ]
+}
+```
+
+Before enabling a service, preview the actions:
+
+```bash
+xdisplay-attach enforce --config displays.json --dry-run
+```
 
 ## Service
 
@@ -49,7 +76,7 @@ After=graphical-session.target
 Type=oneshot
 Environment=DISPLAY=:0
 Environment=XAUTHORITY=/home/kiosk/.Xauthority
-ExecStart=/usr/local/bin/xdisplay-attach auto --config /etc/xdisplay-attach/displays.json
+ExecStart=/usr/local/bin/xdisplay-attach enforce --config /etc/xdisplay-attach/displays.json
 SuccessExitStatus=10 11
 ```
 
@@ -74,7 +101,7 @@ user-session X11 environment.
 Expected downstream order:
 
 ```text
-xdisplay-attach auto --config displays.json
+xdisplay-attach enforce --config displays.json
 xdisplay-ruler enforce --layout layout.json --once
 ```
 
