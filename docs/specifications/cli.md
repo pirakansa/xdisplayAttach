@@ -13,6 +13,7 @@ xdisplay-attach on --output NAME --rotate DIR
 xdisplay-attach off --output NAME
 xdisplay-attach auto --config FILE
 xdisplay-attach enforce --config FILE [--dry-run]
+xdisplay-attach enforce --config FILE --watch [--debounce-ms N] [--retry COUNT] [--retry-delay-ms N]
 ```
 
 `status` observes RandR outputs and prints each output name, connection state,
@@ -51,9 +52,15 @@ requested mode, position, rotation, and CRTC output list.
 `enforce` reads the same JSON configuration as `auto` and applies the same
 state convergence behavior. It is intended for startup and hotplug workflows
 where a display policy should be restored whenever the command runs. With
-`--dry-run`, it loads current RandR state, validates configured connected
-outputs, prints the planned per-output actions, and does not call RandR
-configuration methods. Dry-run output lines use these forms:
+`--watch`, it applies the policy once, subscribes to RandR change notifications,
+and keeps running. When a relevant RandR event is observed, the watcher waits
+for the debounce interval and applies the policy again. The default debounce is
+`500` milliseconds, the default retry count is `3`, and the default retry delay
+is `1000` milliseconds. `--dry-run` and `--watch` cannot be combined.
+
+With `--dry-run`, `enforce` loads current RandR state, validates configured
+connected outputs, prints the planned per-output actions, and does not call
+RandR configuration methods. Dry-run output lines use these forms:
 
 ```text
 HDMI-1 set 1920x1080+0+0 rotate left

@@ -11,13 +11,17 @@ use self::state::{
     CrtcState, OutputState, RandrState, SelectedMode, CURRENT_TIME, DISABLED_CRTC, DISABLED_MODE,
 };
 use crate::{
-    AttachError, CommandResult, DisplayConfig, ExitStatus, ModeSummary, OnRequest, OutputStatus,
-    Result,
+    signal, AttachError, CommandResult, DisplayConfig, ErrorKind, ExitStatus, ModeSummary,
+    OnRequest, OutputStatus, Result, WatchOptions,
 };
+use std::thread;
+use std::time::{Duration, Instant};
 use x11rb::connection::Connection;
 use x11rb::protocol::randr::{
-    Connection as OutputConnection, ConnectionExt as RandrConnectionExt, Crtc, Rotation, SetConfig,
+    Connection as OutputConnection, ConnectionExt as RandrConnectionExt, Crtc, Notify, NotifyMask,
+    Rotation, SetConfig,
 };
+use x11rb::protocol::Event;
 use x11rb::rust_connection::RustConnection;
 
 pub(crate) struct X11Randr {
@@ -70,6 +74,51 @@ impl X11Randr {
         } else {
             self.auto(config)
         }
+    }
+
+    pub(crate) fn watch_enforce(
+        &self,
+        config: &DisplayConfig,
+        options: WatchOptions,
+    ) -> Result<CommandResult> {
+        signal::install_shutdown_handlers();
+        self.subscribe_randr_events()?;
+        eprintln!(
+            "watch started: debounce={}ms retry={} retry-delay={}ms",
+            options.debounce.as_millis(),
+            options.retry_count,
+            options.retry_delay.as_millis()
+        );
+        self.enforce_with_watch_retry(config, options, "initial")?;
+
+        let mut pending_deadline = None;
+        while !signal::shutdown_requested() {
+            while let Some(event) = self
+                .conn
+                .poll_for_event()
+                .map_err(|error| AttachError::xorg(format!("X event stream failed: {error}")))?
+            {
+                if let Some(event_name) = randr_event_name(&event) {
+                    eprintln!("watch event: {event_name}");
+                    pending_deadline = Some(Instant::now() + options.debounce);
+                }
+            }
+
+            if let Some(deadline) = pending_deadline {
+                let now = Instant::now();
+                if now >= deadline {
+                    self.enforce_with_watch_retry(config, options, "event")?;
+                    pending_deadline = None;
+                    continue;
+                }
+                thread::sleep((deadline - now).min(Duration::from_millis(50)));
+            } else {
+                thread::sleep(Duration::from_millis(250));
+            }
+        }
+
+        eprintln!("watch stopped");
+        Ok(CommandResult::without_status_line(ExitStatus::Changed))
     }
 
     fn apply_on(&self, state: &RandrState, request: &OnRequest) -> Result<CommandResult> {
@@ -226,6 +275,61 @@ impl X11Randr {
             crtcs,
             modes: resources.modes,
         })
+    }
+
+    fn subscribe_randr_events(&self) -> Result<()> {
+        let setup = self.conn.setup();
+        let screen = setup
+            .roots
+            .get(self.screen_num)
+            .ok_or_else(|| AttachError::xorg("default X screen is unavailable"))?;
+        let mask = NotifyMask::SCREEN_CHANGE
+            | NotifyMask::CRTC_CHANGE
+            | NotifyMask::OUTPUT_CHANGE
+            | NotifyMask::OUTPUT_PROPERTY
+            | NotifyMask::RESOURCE_CHANGE;
+        self.conn
+            .randr_select_input(screen.root, mask)
+            .map_err(|error| AttachError::xorg(format!("RandR event selection failed: {error}")))?;
+        self.conn
+            .flush()
+            .map_err(|error| AttachError::xorg(format!("RandR event selection failed: {error}")))?;
+        Ok(())
+    }
+
+    fn enforce_with_watch_retry(
+        &self,
+        config: &DisplayConfig,
+        options: WatchOptions,
+        phase: &str,
+    ) -> Result<()> {
+        let mut attempt = 0;
+        loop {
+            match self.enforce(config, false) {
+                Ok(result) => {
+                    log_watch_result(phase, &result);
+                    return Ok(());
+                }
+                Err(error)
+                    if should_retry_watch_error(error.kind()) && attempt < options.retry_count =>
+                {
+                    attempt += 1;
+                    eprintln!(
+                        "watch {phase}: {error}; retrying ({attempt}/{})",
+                        options.retry_count
+                    );
+                    sleep_until_retry_or_shutdown(options.retry_delay);
+                    if signal::shutdown_requested() {
+                        return Ok(());
+                    }
+                }
+                Err(error) if should_retry_watch_error(error.kind()) => {
+                    eprintln!("watch {phase}: {error}; retry exhausted");
+                    return Ok(());
+                }
+                Err(error) => return Err(error),
+            }
+        }
     }
 
     fn expand_root_if_needed(
@@ -398,6 +502,48 @@ fn check_set_config(status: SetConfig) -> Result<()> {
     }
 }
 
+fn randr_event_name(event: &Event) -> Option<&'static str> {
+    match event {
+        Event::RandrScreenChangeNotify(_) => Some("screen-change"),
+        Event::RandrNotify(event) if event.sub_code == Notify::CRTC_CHANGE => Some("crtc-change"),
+        Event::RandrNotify(event) if event.sub_code == Notify::OUTPUT_CHANGE => {
+            Some("output-change")
+        }
+        Event::RandrNotify(event) if event.sub_code == Notify::OUTPUT_PROPERTY => {
+            Some("output-property")
+        }
+        Event::RandrNotify(event) if event.sub_code == Notify::RESOURCE_CHANGE => {
+            Some("resource-change")
+        }
+        _ => None,
+    }
+}
+
+fn should_retry_watch_error(kind: ErrorKind) -> bool {
+    matches!(kind, ErrorKind::Unavailable | ErrorKind::RandrFailed)
+}
+
+fn log_watch_result(phase: &str, result: &CommandResult) {
+    for message in result.messages() {
+        eprintln!("watch {phase}: {message}");
+    }
+    for warning in result.warnings() {
+        eprintln!("watch {phase} warning: {warning}");
+    }
+    eprintln!("watch {phase}: {}", result.status());
+}
+
+fn sleep_until_retry_or_shutdown(duration: Duration) {
+    let deadline = Instant::now() + duration;
+    while !signal::shutdown_requested() {
+        let now = Instant::now();
+        if now >= deadline {
+            return;
+        }
+        thread::sleep((deadline - now).min(Duration::from_millis(50)));
+    }
+}
+
 fn checked_extent(offset: i16, size: u16) -> Result<u16> {
     if offset < 0 {
         return Err(AttachError::unavailable(
@@ -556,6 +702,14 @@ mod tests {
     fn set_config_status_maps_non_success_to_randr_error() {
         let error = check_set_config(SetConfig::INVALID_CONFIG_TIME).unwrap_err();
         assert_eq!(error.kind(), crate::ErrorKind::RandrFailed);
+    }
+
+    #[test]
+    fn watch_retries_only_event_time_operational_errors() {
+        assert!(should_retry_watch_error(crate::ErrorKind::Unavailable));
+        assert!(should_retry_watch_error(crate::ErrorKind::RandrFailed));
+        assert!(!should_retry_watch_error(crate::ErrorKind::Usage));
+        assert!(!should_retry_watch_error(crate::ErrorKind::XorgUnavailable));
     }
 
     #[test]
