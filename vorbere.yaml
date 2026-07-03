@@ -51,36 +51,20 @@ tasks:
     run: cargo build --release --target ${{ .vars.LINUX_AMD64_MUSL_TARGET }}
     desc: Build release binary for Linux amd64 musl
 
-  release-build-linux-amd64-musl:
+  archive-linux-amd64-musl:
     depends_on: [linux-amd64-musl]
-    desc: Build Linux amd64 musl release artifacts
-
-  release-build-linux-arm64-musl:
-    depends_on: [linux-arm64-musl]
-    desc: Build Linux arm64 musl release artifacts
-
-  release-archives-linux-arm64-musl:
-    depends_on: [release-build-linux-arm64-musl]
-    run: |
-      tar --gzip --create --directory="target/${{ .vars.LINUX_ARM64_MUSL_TARGET }}/release" --file="./${{ .vars.PROJECT_NAME }}_linux-arm64-musl.tar.gz" "${{ .vars.PROJECT_NAME }}"
-    desc: Archive Linux arm64 musl release binary
-
-  release-archives-linux-amd64-musl:
-    depends_on: [release-build-linux-amd64-musl]
     run: |
       tar --gzip --create --directory="target/${{ .vars.LINUX_AMD64_MUSL_TARGET }}/release" --file="./${{ .vars.PROJECT_NAME }}_linux-amd64-musl.tar.gz" "${{ .vars.PROJECT_NAME }}"
     desc: Archive Linux amd64 musl release binary
 
-  release-linux-amd64-musl:
-    depends_on: [release-archives-linux-amd64-musl]
-    desc: Build and archive Linux amd64 musl release artifacts
-
-  release-linux-arm64-musl:
-    depends_on: [release-archives-linux-arm64-musl]
-    desc: Build and archive Linux arm64 musl release artifacts
+  archive-linux-arm64-musl:
+    depends_on: [linux-arm64-musl]
+    run: |
+      tar --gzip --create --directory="target/${{ .vars.LINUX_ARM64_MUSL_TARGET }}/release" --file="./${{ .vars.PROJECT_NAME }}_linux-arm64-musl.tar.gz" "${{ .vars.PROJECT_NAME }}"
+    desc: Archive Linux arm64 musl release binary
 
   release:
-    depends_on: [release-archives-linux-amd64-musl, release-archives-linux-arm64-musl]
+    depends_on: [archive-linux-amd64-musl, archive-linux-arm64-musl]
     desc: Build and archive Linux musl release artifacts
 
   ci:
