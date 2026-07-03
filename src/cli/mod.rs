@@ -2,9 +2,11 @@ use crate::config::read_config;
 use crate::randr::X11Randr;
 use crate::{
     AttachError, Command, CommandResult, ExitStatus, ModeRequest, OnRequest, OutputStatus, Result,
+    WatchOptions,
 };
 use std::env;
 use std::path::PathBuf;
+use std::time::Duration;
 
 pub fn parse_args<I, S>(args: I) -> Result<Command>
 where
@@ -38,7 +40,8 @@ pub fn usage() -> String {
   xdisplay-attach on --output NAME --rotate DIR
   xdisplay-attach off --output NAME
   xdisplay-attach auto --config FILE
-  xdisplay-attach enforce --config FILE [--dry-run]"
+  xdisplay-attach enforce --config FILE [--dry-run]
+  xdisplay-attach enforce --config FILE --watch [--debounce-ms N] [--retry COUNT] [--retry-delay-ms N]"
         .to_string()
 }
 
@@ -66,9 +69,18 @@ pub fn run_cli() -> Result<CommandResult> {
             let config = read_config(&config)?;
             X11Randr::connect()?.auto(&config)
         }
-        Command::Enforce { config, dry_run } => {
+        Command::Enforce {
+            config,
+            dry_run,
+            watch,
+        } => {
             let config = read_config(&config)?;
-            X11Randr::connect()?.enforce(&config, dry_run)
+            let randr = X11Randr::connect()?;
+            if let Some(watch) = watch {
+                randr.watch_enforce(&config, watch)
+            } else {
+                randr.enforce(&config, dry_run)
+            }
         }
     }
 }
@@ -156,11 +168,33 @@ fn parse_auto(args: impl Iterator<Item = String>) -> Result<Command> {
 fn parse_enforce(args: impl Iterator<Item = String>) -> Result<Command> {
     let mut config = None;
     let mut dry_run = false;
+    let mut watch = false;
+    let mut debounce = WatchOptions::default().debounce;
+    let mut retry_count = WatchOptions::default().retry_count;
+    let mut retry_delay = WatchOptions::default().retry_delay;
+    let mut watch_timing_option = None;
     let mut args = args.peekable();
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--config" => config = Some(PathBuf::from(next_value(&mut args, "--config")?)),
             "--dry-run" => dry_run = true,
+            "--watch" => watch = true,
+            "--debounce-ms" => {
+                watch_timing_option = Some("--debounce-ms");
+                debounce =
+                    parse_duration_ms(next_value(&mut args, "--debounce-ms")?, "--debounce-ms")?;
+            }
+            "--retry" => {
+                watch_timing_option = Some("--retry");
+                retry_count = parse_u16(next_value(&mut args, "--retry")?, "--retry")?;
+            }
+            "--retry-delay-ms" => {
+                watch_timing_option = Some("--retry-delay-ms");
+                retry_delay = parse_duration_ms(
+                    next_value(&mut args, "--retry-delay-ms")?,
+                    "--retry-delay-ms",
+                )?;
+            }
             _ => {
                 return Err(AttachError::usage(format!(
                     "unknown enforce option '{arg}'"
@@ -168,9 +202,24 @@ fn parse_enforce(args: impl Iterator<Item = String>) -> Result<Command> {
             }
         }
     }
+    if dry_run && watch {
+        return Err(AttachError::usage(
+            "--dry-run cannot be combined with --watch",
+        ));
+    }
+    if !watch {
+        if let Some(option) = watch_timing_option {
+            return Err(AttachError::usage(format!("{option} requires --watch")));
+        }
+    }
     Ok(Command::Enforce {
         config: config.ok_or_else(|| AttachError::usage("enforce requires --config"))?,
         dry_run,
+        watch: watch.then_some(WatchOptions {
+            debounce,
+            retry_count,
+            retry_delay,
+        }),
     })
 }
 
@@ -201,6 +250,18 @@ fn parse_f64(value: String, option: &str) -> Result<f64> {
     value
         .parse()
         .map_err(|_| AttachError::usage(format!("{option} must be a number")))
+}
+
+fn parse_duration_ms(value: String, option: &str) -> Result<Duration> {
+    let millis = value
+        .parse::<u64>()
+        .map_err(|_| AttachError::usage(format!("{option} must be an integer")))?;
+    if millis == 0 {
+        return Err(AttachError::usage(format!(
+            "{option} must be greater than zero"
+        )));
+    }
+    Ok(Duration::from_millis(millis))
 }
 
 fn parse_rotation(value: String) -> Result<crate::RotationRequest> {
@@ -365,6 +426,7 @@ mod tests {
             Command::Enforce {
                 config: PathBuf::from("displays.json"),
                 dry_run: false,
+                watch: None,
             }
         );
     }
@@ -376,8 +438,77 @@ mod tests {
             Command::Enforce {
                 config: PathBuf::from("displays.json"),
                 dry_run: true,
+                watch: None,
             }
         );
+    }
+
+    #[test]
+    fn parses_enforce_watch_command() {
+        assert_eq!(
+            parse_args([
+                "enforce",
+                "--config",
+                "displays.json",
+                "--watch",
+                "--debounce-ms",
+                "250",
+                "--retry",
+                "5",
+                "--retry-delay-ms",
+                "750",
+            ])
+            .unwrap(),
+            Command::Enforce {
+                config: PathBuf::from("displays.json"),
+                dry_run: false,
+                watch: Some(WatchOptions {
+                    debounce: Duration::from_millis(250),
+                    retry_count: 5,
+                    retry_delay: Duration::from_millis(750),
+                }),
+            }
+        );
+    }
+
+    #[test]
+    fn rejects_enforce_watch_dry_run() {
+        let error = parse_args([
+            "enforce",
+            "--config",
+            "displays.json",
+            "--watch",
+            "--dry-run",
+        ])
+        .unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::Usage);
+    }
+
+    #[test]
+    fn rejects_zero_enforce_watch_duration() {
+        let error = parse_args([
+            "enforce",
+            "--config",
+            "displays.json",
+            "--watch",
+            "--debounce-ms",
+            "0",
+        ])
+        .unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::Usage);
+    }
+
+    #[test]
+    fn rejects_watch_timing_option_without_watch() {
+        let error = parse_args([
+            "enforce",
+            "--config",
+            "displays.json",
+            "--debounce-ms",
+            "250",
+        ])
+        .unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::Usage);
     }
 
     #[test]

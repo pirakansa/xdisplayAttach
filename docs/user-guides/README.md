@@ -5,8 +5,8 @@ activation workflows.
 
 - [Getting started](getting-started.md): inspect outputs, activate or disable an
   output, and enforce the first display configuration.
-- [Hotplug usage](hotplug.md): run `enforce` from a short-lived systemd service
-  triggered by DRM/udev events.
+- [Hotplug usage](hotplug.md): keep an `enforce --watch` process running so it
+  reapplies a display policy after RandR hotplug events.
 
 For exact command options, JSON fields, and exit statuses, see the
 [CLI specification](../specifications/cli.md).

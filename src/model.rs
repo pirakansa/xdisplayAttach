@@ -1,15 +1,41 @@
 use serde::Deserialize;
 use std::path::PathBuf;
+use std::time::Duration;
 use x11rb::protocol::randr::{Mode, Rotation};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Command {
     Status,
     On(OnRequest),
-    Off { output: String },
-    Auto { config: PathBuf },
-    Enforce { config: PathBuf, dry_run: bool },
+    Off {
+        output: String,
+    },
+    Auto {
+        config: PathBuf,
+    },
+    Enforce {
+        config: PathBuf,
+        dry_run: bool,
+        watch: Option<WatchOptions>,
+    },
     Help,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WatchOptions {
+    pub debounce: Duration,
+    pub retry_count: u16,
+    pub retry_delay: Duration,
+}
+
+impl Default for WatchOptions {
+    fn default() -> Self {
+        Self {
+            debounce: Duration::from_millis(500),
+            retry_count: 3,
+            retry_delay: Duration::from_millis(1000),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
