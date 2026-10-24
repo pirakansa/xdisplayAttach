@@ -8,8 +8,8 @@
             "CONTAINER_USERID": "${localEnv:USERID:1000}"
         }
     },
-    "workspaceMount": "source=${localWorkspaceFolder},target=/work/${localWorkspaceFolderBasename},type=bind,consistency=cached",
-    "workspaceFolder": "/work/${localWorkspaceFolderBasename}",
+    "workspaceMount": "source=${localWorkspaceFolder},target=${localWorkspaceFolder},type=bind",
+    "workspaceFolder": "${localWorkspaceFolder}",
     "remoteUser": "${localEnv:USERNAME:builder}",
     "remoteEnv": {
         "PATH": "${containerEnv:PATH}:/home/${localEnv:USERNAME:builder}/.local/bin"
