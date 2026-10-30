@@ -1,5 +1,6 @@
 mod auto;
 mod mode;
+mod root;
 mod state;
 mod touch;
 
@@ -21,6 +22,7 @@ use x11rb::protocol::randr::{
     Connection as OutputConnection, ConnectionExt as RandrConnectionExt, Crtc, Notify, NotifyMask,
     Rotation, SetConfig,
 };
+use x11rb::protocol::xproto::ConnectionExt as XprotoConnectionExt;
 use x11rb::protocol::Event;
 use x11rb::rust_connection::RustConnection;
 
@@ -212,6 +214,15 @@ impl X11Randr {
             .get(self.screen_num)
             .ok_or_else(|| AttachError::xorg("default X screen is unavailable"))?;
         let root = screen.root;
+        let dimensions = root::load_dimensions(screen, || {
+            let geometry = self
+                .conn
+                .get_geometry(root)
+                .map_err(|error| AttachError::randr(error.to_string()))?
+                .reply()
+                .map_err(|error| AttachError::randr(error.to_string()))?;
+            Ok((geometry.width, geometry.height))
+        })?;
         let resources = self
             .conn
             .randr_get_screen_resources(root)
@@ -267,10 +278,10 @@ impl X11Randr {
         Ok(RandrState {
             root,
             config_timestamp: resources.config_timestamp,
-            root_width: screen.width_in_pixels,
-            root_height: screen.height_in_pixels,
-            root_mm_width: screen.width_in_millimeters,
-            root_mm_height: screen.height_in_millimeters,
+            root_width: dimensions.width,
+            root_height: dimensions.height,
+            root_mm_width: dimensions.mm_width,
+            root_mm_height: dimensions.mm_height,
             outputs,
             crtcs,
             modes: resources.modes,
@@ -341,13 +352,11 @@ impl X11Randr {
         let (width, height) = request.rotation.dimensions(mode.width, mode.height);
         let right = checked_extent(request.x, width)?;
         let bottom = checked_extent(request.y, height)?;
-        let new_width = right.max(state.root_width);
-        let new_height = bottom.max(state.root_height);
-        if new_width == state.root_width && new_height == state.root_height {
-            return Ok(false);
-        }
-        self.set_screen_size(state, new_width, new_height)?;
-        Ok(true)
+        root::expand_if_needed(
+            (state.root_width, state.root_height),
+            (right, bottom),
+            |width, height| self.set_screen_size(state, width, height),
+        )
     }
 
     fn shrink_root_after_disable(&self, state: &RandrState, disabled_crtc: Crtc) -> Result<()> {
@@ -554,6 +563,10 @@ fn checked_extent(offset: i16, size: u16) -> Result<u16> {
     u16::try_from(extent).map_err(|_| AttachError::unavailable("output bounds exceed u16 range"))
 }
 
+fn clamp_mm(mm: u32) -> u16 {
+    mm.clamp(1, u32::from(u16::MAX)) as u16
+}
+
 fn scaled_mm(current_mm: u16, current_pixels: u16, new_pixels: u16) -> u32 {
     if current_mm == 0 || current_pixels == 0 {
         return u32::from(new_pixels);
@@ -694,8 +707,17 @@ mod tests {
     #[test]
     fn scales_physical_size_with_pixel_size() {
         assert_eq!(scaled_mm(300, 1920, 3840), 600);
+        assert_eq!(scaled_mm(600, 3840, 1920), 300);
+        assert_eq!(scaled_mm(1, u16::MAX, 1), 1);
         assert_eq!(scaled_mm(0, 1920, 3840), 3840);
         assert_eq!(scaled_mm(300, 0, 3840), 3840);
+    }
+
+    #[test]
+    fn physical_size_fits_protocol_range() {
+        assert_eq!(clamp_mm(0), 1);
+        assert_eq!(clamp_mm(600), 600);
+        assert_eq!(clamp_mm(scaled_mm(u16::MAX, 1, u16::MAX)), u16::MAX);
     }
 
     #[test]
